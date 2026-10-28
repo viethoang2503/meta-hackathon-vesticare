@@ -1,0 +1,13 @@
+// vesticare-sensor/include/config.h.example
+//
+// Copy this file to config.h and fill in real values.
+// config.h is gitignored — never commit real WiFi credentials or tokens.
+#pragma once
+
+#define WIFI_SSID "your-wifi-ssid"
+#define WIFI_PASSWORD "your-wifi-password"
+#define BACKEND_URL "http://192.168.1.100:8000"
+#define DEVICE_TOKEN ""          // must match DEVICE_TOKEN in backend/.env; leave empty if unset there
+#define DEVICE_ID "esp32-01"
+#define FIRMWARE_VERSION "1.0.0"
+#define PATIENT_ID 1

@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Database
+*.db
+
+# Environment
+.env
+
+# ML models (too large for git)
+ml/models/*.h5
+ml/models/*.keras
+ml/models/*.tflite
+ml/models/*.pkl
+ml/models/*.joblib
+ml/models/*.npz
+ml/models_*/
+
+# Raw data (too large for git)
+ml/data/raw/
+
+# Processed data artifacts (regenerated from preprocessing scripts)
+ml/data/processed/*.npz
+ml/data/processed/*.csv
+ml/data/processed/*.parquet
+ml/data/processed_*/
+
+# Evaluation binary artifacts
+ml/evaluation/*.npz
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# PlatformIO build output
+.pio/
+
+# Frontend tooling
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local assistant/editor settings
+.claude/
+
+# Verification harness (venv, scratch instances, evidence)
+.verify/

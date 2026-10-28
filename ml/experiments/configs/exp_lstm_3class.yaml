@@ -1,0 +1,59 @@
+# Experiment: LSTM 3-class (best offline model)
+# Inherits base.yaml — only overrides are listed here.
+
+experiment:
+  name: "lstm_3class"
+  model: "lstm"
+  description: "LSTM 3-class — best offline accuracy, used as research comparison baseline"
+  paper_table: "B.3"
+
+# ── Model architecture ───────────────────────────────────────
+model:
+  type: "lstm"
+  layers:
+    - {type: LSTM, units: 32, return_sequences: false}
+    - {type: BatchNormalization}
+    - {type: Dropout, rate: 0.3}
+    - {type: Dense, units: 32, activation: relu}
+    - {type: Dropout, rate: 0.3}
+    - {type: Dense, units: 3, activation: softmax}
+
+# ── Training ─────────────────────────────────────────────────
+training:
+  optimizer: adam
+  learning_rate: 0.001
+  loss: categorical_crossentropy
+  epochs: 50
+  batch_size: 64
+  validation_split: 0.15
+  class_weight: balanced
+  early_stopping:
+    monitor: val_loss
+    patience: 10
+    restore_best_weights: true
+  reduce_lr:
+    monitor: val_loss
+    factor: 0.5
+    patience: 4
+    min_lr: 0.000001
+  augmentation:
+    enabled: true
+    techniques: [jitter, scale, time_shift]
+    jitter_std: 0.05
+    scale_range: [0.85, 1.15]
+    shift_range: [-3, 3]
+  repeated_seeds: 1     # set to 3 for paper-quality results
+  seeds: [42]
+
+# ── Quantization ────────────────────────────────────────────
+quantization:
+  export_float32_tflite: true
+  export_int8_tflite: false   # LSTM TFLite requires Flex delegate — not supported on ESP32
+
+# ── Output ──────────────────────────────────────────────────
+output:
+  save_keras: true
+  save_tflite_f32: true
+  save_tflite_int8: false
+  save_training_history: true
+  model_dir: "ml/models_3class"

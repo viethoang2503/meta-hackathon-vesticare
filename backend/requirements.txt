@@ -1,0 +1,27 @@
+# Requires Python >= 3.10.
+#
+# The Pydantic request models annotate optional fields with PEP 604 unions
+# (`datetime | None`). Pydantic evaluates those annotations at runtime to build
+# its validators, so `from __future__ import annotations` does not lower the
+# floor here — it defers the annotation to a string that Pydantic then has to
+# evaluate anyway, and on 3.9 that raises
+# "Unable to evaluate type annotation 'datetime | None'".
+#
+# Verified: on 3.9 the whole backend test suite fails at collection.
+#
+# The open `>=` ranges below let this environment drift to fastapi 0.141 /
+# starlette 1.6, where `include_router()` started wrapping routes in an
+# `_IncludedRouter` with no `.path`. Four route-registration tests broke on that
+# alone. Tested ceiling recorded so the next drift is a resolver error rather
+# than a surprise at test time; raise it deliberately after re-running the suite.
+fastapi>=0.100.0,<0.142
+uvicorn[standard]>=0.23.0
+sqlalchemy>=2.0.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+httpx>=0.24.0
+pytest>=7.0.0
+numpy>=1.26.0
+tensorflow-cpu>=2.15.0
+pyserial>=3.5

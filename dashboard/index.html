@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vesti-Care — Live Monitor</title>
+
+  <link rel="stylesheet" href="css/main.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/responsive.css" />
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <header>
+    <h1>Vesti-Care</h1>
+    <nav class="header-nav">
+      <a href="index.html" class="nav-link nav-active">Live Monitor</a>
+      <a href="history.html" class="nav-link">Alert History</a>
+      <a href="forecast.html" class="nav-link">Risk Forecast</a>
+    </nav>
+    <span id="conn-status" class="conn-badge conn-disconnected">Disconnected</span>
+  </header>
+
+  <main>
+
+    <div class="filter-bar">
+      <label>
+        Patient ID:
+        <input type="number" id="patient-filter" min="1" placeholder="All patients" />
+      </label>
+      <label>
+        Source:
+        <select id="source-select">
+          <option value="wifi">Wi-Fi</option>
+          <option value="usb">USB Serial</option>
+        </select>
+      </label>
+      <label id="token-field" class="token-field" hidden>
+        Device token:
+        <input type="password" id="device-token" autocomplete="off" placeholder="Optional" />
+      </label>
+      <button id="usb-connect" class="btn-refresh" type="button" disabled>Connect USB</button>
+      <span id="usb-status" class="source-status">Wi-Fi selected</span>
+    </div>
+
+    <!-- ── Device health ── -->
+    <div class="device-health-bar">
+      <span class="dh-label">Device</span>
+      <span id="dh-status" class="dh-badge dh-offline">Offline</span>
+      <span class="dh-item"><span class="dh-key">Last seen</span> <span id="dh-last-seen">—</span></span>
+      <span class="dh-item"><span class="dh-key">Source</span> <span id="dh-source">—</span></span>
+      <span class="dh-item"><span class="dh-key">Sample rate</span> <span id="dh-rate">—</span></span>
+    </div>
+
+    <!-- ── System metrics ── -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <span class="stat-label">Total Alerts</span>
+        <span id="stat-total" class="stat-value">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Unacknowledged</span>
+        <span id="stat-unacked" class="stat-value">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Alerts Today</span>
+        <span id="stat-today" class="stat-value">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Avg Alert Latency</span>
+        <span id="stat-latency" class="stat-value">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">False Alerts</span>
+        <span id="stat-false" class="stat-value">—</span>
+      </div>
+    </div>
+
+    <div class="grid live-grid">
+
+      <!-- ── Left: decision panel + SVM chart ── -->
+      <section class="card decision-card">
+        <div class="card-header">
+          <h2>Current State</h2>
+          <span id="imu-freshness" class="freshness freshness-stale">IMU: no data</span>
+        </div>
+
+        <div id="decision-badge" class="decision-badge decision-unknown"
+             role="status" aria-live="polite">UNKNOWN</div>
+
+        <p id="evidence-line" class="evidence-line">IMU unavailable</p>
+
+        <div class="prob-rows">
+          <div class="prob-row">
+            <label for="prob-normal">Normal</label>
+            <progress id="prob-normal" class="prob-bar prob-normal" max="1" value="0"></progress>
+            <span id="prob-normal-value" class="prob-value">—</span>
+          </div>
+          <div class="prob-row">
+            <label for="prob-instability">Instability</label>
+            <progress id="prob-instability" class="prob-bar prob-instability" max="1" value="0"></progress>
+            <span id="prob-instability-value" class="prob-value">—</span>
+          </div>
+          <div class="prob-row">
+            <label for="prob-fall">Fall</label>
+            <progress id="prob-fall" class="prob-bar prob-fall" max="1" value="0"></progress>
+            <span id="prob-fall-value" class="prob-value">—</span>
+          </div>
+        </div>
+
+        <p class="tier-note">
+          The decision and these probabilities come from the IMU model alone.
+        </p>
+
+        <div class="metrics">
+          <div class="metric">
+            <span class="metric-label">SVM (current)</span>
+            <span id="metric-svm" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Peak SVM (window)</span>
+            <span id="metric-peak-svm" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Fall confidence</span>
+            <span id="metric-conf" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Patient</span>
+            <span id="metric-patient" class="metric-value">—</span>
+          </div>
+          <div class="metric" style="grid-column: span 2;">
+            <span class="metric-label">Buffer</span>
+            <span id="metric-buffer" class="metric-value">—</span>
+          </div>
+        </div>
+
+        <div class="chart-container">
+          <canvas id="svm-chart"></canvas>
+        </div>
+      </section>
+
+      <!-- ── Right: alerts table ── -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Recent Alerts</h2>
+          <button class="btn-refresh" onclick="loadAlerts()">Refresh</button>
+        </div>
+        <div id="alerts-container">
+          <p class="placeholder">Loading…</p>
+        </div>
+      </section>
+
+    </div>
+
+    <section class="card imu-card">
+      <div class="card-header">
+        <h2>Live IMU</h2>
+        <span id="imu-source" class="source-status">Source: Wi-Fi</span>
+      </div>
+
+      <div class="sensor-readouts">
+        <div class="sensor-reading"><span>ax</span><strong id="sensor-ax">—</strong><small>g</small></div>
+        <div class="sensor-reading"><span>ay</span><strong id="sensor-ay">—</strong><small>g</small></div>
+        <div class="sensor-reading"><span>az</span><strong id="sensor-az">—</strong><small>g</small></div>
+        <div class="sensor-reading"><span>gx</span><strong id="sensor-gx">—</strong><small>rad/s</small></div>
+        <div class="sensor-reading"><span>gy</span><strong id="sensor-gy">—</strong><small>rad/s</small></div>
+        <div class="sensor-reading"><span>gz</span><strong id="sensor-gz">—</strong><small>rad/s</small></div>
+      </div>
+
+      <div class="imu-chart-grid">
+        <div>
+          <h3>Acceleration (g)</h3>
+          <div class="chart-container imu-chart-container"><canvas id="accel-chart"></canvas></div>
+        </div>
+        <div>
+          <h3>Angular velocity (rad/s)</h3>
+          <div class="chart-container imu-chart-container"><canvas id="gyro-chart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card timeline-card">
+      <h3>Recent transitions</h3>
+      <ul id="event-timeline" class="event-timeline">
+        <li class="placeholder">No events yet.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/serial.js"></script>
+  <script src="js/live_state.js"></script>
+  <script src="js/realtime.js"></script>
+
+</body>
+</html>

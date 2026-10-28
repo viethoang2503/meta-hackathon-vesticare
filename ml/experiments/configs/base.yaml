@@ -1,0 +1,61 @@
+# Base experiment configuration
+# All experiment configs inherit / override these values.
+
+# ── Dataset ────────────────────────────────────────────────
+dataset:
+  data_dir: "ml/data/processed_3class"        # relative to project root
+  x_train_file: "X_train.npz"
+  x_test_file: "X_test.npz"
+  y_train_file: "y_train.npz"
+  y_test_file: "y_test.npz"
+  x_test_features_file: "X_test_features.npz" # pre-extracted RF features (optional)
+
+  # Label mapping (must match preprocessing)
+  label_map:
+    0: "NORMAL"
+    1: "VESTIBULAR_INSTABILITY"
+    2: "FALL"
+
+  # Sources used in this dataset
+  sources:
+    - name: "SisFall"
+      reference: "Sucerquia et al. 2017"
+      classes: [NORMAL, FALL]
+    - name: "VestibularDataset"
+      reference: "Grouvel et al. 2025"
+      classes: [NORMAL, VESTIBULAR_INSTABILITY]
+
+# ── Split ───────────────────────────────────────────────────
+split:
+  type: "subject_independent"      # no subject overlap between train and test
+  strategy: "pre_split"            # data already split by preprocess_vestibular.py
+  # Subject IDs are recorded in docs/research_baseline.md
+
+# ── Signal ──────────────────────────────────────────────────
+signal:
+  sampling_rate_hz: 50
+  window_size: 100                  # samples (= 2 seconds)
+  window_overlap: 50                # samples (50% overlap)
+  channels: [ax, ay, az, gx, gy, gz, svm]
+  num_channels: 7
+
+# ── Evaluation (locked — M1.3) ───────────────────────────────
+evaluation:
+  metrics: [accuracy, balanced_accuracy, macro_f1, per_class_precision, per_class_recall, per_class_f1, per_class_support]
+  confusion_matrix: true
+  inference_timing: true
+  inference_bench_n: 500            # windows used for timing benchmark
+  report_mean_std: true             # if repeated_seeds > 1
+
+# ── Random seeds ────────────────────────────────────────────
+training:
+  repeated_seeds: 1                 # increase to 3 for neural models if compute allows
+  seeds: [42]
+
+# ── Decision thresholds (backend contract) ───────────────────
+thresholds:
+  svm_fall: 2.5          # G — hard safety fallback
+  svm_sway: 1.5          # G — SVM lower bound for FALL via ML
+  ml_fall: 0.5           # P(FALL) threshold
+  ml_instability: 0.5    # P(INSTABILITY) threshold
+  cooldown_seconds: 10

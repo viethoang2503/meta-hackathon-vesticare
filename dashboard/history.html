@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vesti-Care — Alert History</title>
+
+  <link rel="stylesheet" href="css/main.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/responsive.css" />
+</head>
+<body>
+
+  <header>
+    <h1>Vesti-Care</h1>
+    <nav class="header-nav">
+      <a href="index.html" class="nav-link">Live Monitor</a>
+      <a href="history.html" class="nav-link nav-active">Alert History</a>
+      <a href="forecast.html" class="nav-link">Risk Forecast</a>
+    </nav>
+    <span></span>
+  </header>
+
+  <main>
+
+    <!-- ── Filters ── -->
+    <div class="card history-filters">
+      <h2>Filters</h2>
+      <div class="filter-grid">
+
+        <label class="filter-field">
+          Patient ID
+          <input type="number" id="filter-patient" min="1" placeholder="All patients" />
+        </label>
+
+        <label class="filter-field">
+          From (UTC)
+          <input type="datetime-local" id="filter-since" />
+        </label>
+
+        <label class="filter-field">
+          Until (UTC)
+          <input type="datetime-local" id="filter-until" />
+        </label>
+
+        <label class="filter-field filter-field--checkbox">
+          <input type="checkbox" id="filter-unacked" />
+          Unacknowledged only
+        </label>
+
+        <div class="filter-field filter-field--action">
+          <button class="btn-apply" onclick="applyFilters()">Apply</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Results ── -->
+    <div class="card" style="margin-top:16px;">
+      <div class="card-header">
+        <h2>Results</h2>
+        <span id="history-summary" class="text-muted" style="font-size:13px;"></span>
+      </div>
+      <div id="history-container">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,22 @@
+/* responsive.css — breakpoints */
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .sensor-readouts { grid-template-columns: repeat(3, 1fr); }
+  .imu-chart-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 500px) {
+  main { padding: 12px; }
+  /* The decision stays first on a phone; everything technical scrolls below it. */
+  .live-grid { display: flex; flex-direction: column; }
+  .live-grid .decision-card { order: -1; }
+  .metrics { grid-template-columns: 1fr 1fr; }
+  .alerts-table th:nth-child(4),
+  .alerts-table td:nth-child(4) { display: none; } /* hide Confidence on small screens */
+  .filter-bar { align-items: stretch; flex-direction: column; }
+  .filter-bar label { justify-content: space-between; }
+  .sensor-readouts { grid-template-columns: repeat(2, 1fr); }
+}

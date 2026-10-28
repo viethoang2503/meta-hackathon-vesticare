@@ -1,0 +1,50 @@
+# Experiment: Random Forest 3-class (fast interpretable baseline)
+# Inherits base.yaml — only overrides are listed here.
+
+experiment:
+  name: "rf_3class"
+  model: "random_forest"
+  description: "Random Forest 3-class — fast, interpretable, no normalization needed"
+  paper_table: "B.3"
+
+# ── Model hyperparameters ─────────────────────────────────────
+model:
+  type: "random_forest"
+  n_estimators: 200
+  max_depth: 20
+  min_samples_leaf: 5
+  class_weight: "balanced"
+
+# ── Features (19 handcrafted features per window) ─────────────
+features:
+  - svm_mean
+  - svm_max
+  - svm_min
+  - svm_std
+  - svm_range
+  - ax_mean
+  - ay_mean
+  - az_mean
+  - ax_std
+  - ay_std
+  - az_std
+  - gyro_mag_mean
+  - gyro_mag_max
+  - gyro_mag_std
+  - jerk_mean
+  - jerk_max
+  - tilt_mean
+  - tilt_std
+  - sway_freq_power    # mean power 0.5-2 Hz band of SVM (vestibular-specific)
+
+# ── Training ─────────────────────────────────────────────────
+training:
+  repeated_seeds: 1
+  seeds: [42]
+  augmentation:
+    enabled: true
+
+# ── Output ──────────────────────────────────────────────────
+output:
+  save_pkl: true
+  model_dir: "ml/models_3class"
