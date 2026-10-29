@@ -38,7 +38,10 @@
   .state-cancelled_by_wearer { color: #8fc58a; }
   .state-alerted { color: #ff7a6e; }
   #evidence { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-  #evidence img { width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+  #evidence .frame { position: relative; }
+  #evidence img, #evidence-mask { width: 100%; border-radius: 6px; display: block; }
+  #evidence img { border: 1px solid var(--line); }
+  #evidence-mask { position: absolute; inset: 0; height: 100%; pointer-events: none; }
   #evidence h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 0; }
   #evidence ul { margin: 0; padding-left: 18px; }
   .imu { width: 100%; height: 110px; background: #101317; border: 1px solid var(--line); border-radius: 6px; }

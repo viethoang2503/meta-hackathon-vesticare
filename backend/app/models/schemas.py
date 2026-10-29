@@ -124,6 +124,27 @@ class SpatialSession(Base):
     model_source = Column(String, nullable=False)
 
 
+class SpatialAnalysis(Base):
+    """One perception call for an incident. Status: Pending | Running | Complete | NoMatch |
+    Failed | TimedOut | Cancelled | Unavailable. A failure is stored as a failure, never as a result."""
+    __tablename__ = "spatial_analyses"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, ForeignKey("spatial_sessions.id"), nullable=False, index=True)
+    incident_id = Column(Integer, ForeignKey("alert_events.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)  # sam
+    status = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    prompt = Column(String, nullable=True)
+    frame_id = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    output_text = Column(Text, nullable=True)  # raw SAM output; masks are decoded from it
+    boxes = Column(Text, nullable=True)  # JSON list
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+
+
 class SpatialAction(Base):
     """Append-only log of what the policy did: notifications, acks, self-reports, advisories."""
     __tablename__ = "spatial_actions"

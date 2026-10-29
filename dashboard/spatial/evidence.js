@@ -1,5 +1,9 @@
-// Evidence drawer for one incident: location, glasses frame, IMU around the
-// impact, decision and action log. Every block names where its data came from.
+// Evidence drawer for one incident: location, glasses frame with the SAM mask,
+// IMU around the impact, decision and action log. Every block names where its
+// data came from. Masks are decoded from the stored SAM output with Meta's own
+// parser; nothing is drawn when SAM did not return one.
+
+import { decodeMaskToRaster, parseImageStream, recordsOfKind } from "./vendor/meta-sam-parser/index.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -48,12 +52,55 @@ function drawImu(canvas, detail) {
   ctx.setLineDash([]);
 }
 
+async function* samEvents(text) {
+  yield { type: "response.output_text.delta", item_id: "m", output_index: 0, content_index: 0, delta: text };
+  yield { type: "response.output_text.done", item_id: "m", output_index: 0, content_index: 0, text };
+  yield { type: "response.completed" };
+}
+
+async function drawMask(img, canvas, outputText) {
+  await img.decode();
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const parsed = parseImageStream(samEvents(outputText));
+  for await (const _ of parsed);
+  const result = await parsed.finalResult;
+  const ctx = canvas.getContext("2d");
+  const paint = ctx.createImageData(canvas.width, canvas.height);
+  let pixels = 0;
+  for (const record of recordsOfKind(result.records, "mask")) {
+    const raster = decodeMaskToRaster(record.mask);
+    const { left, top } = record.bounds;
+    for (let j = 0; j < record.mask.height; j++) {
+      for (let i = 0; i < record.mask.width; i++) {
+        if (!raster[j * record.mask.width + i]) continue;
+        const p = ((top + j) * canvas.width + left + i) * 4;
+        paint.data.set([224, 72, 62, 140], p);
+        pixels++;
+      }
+    }
+  }
+  ctx.putImageData(paint, 0, 0);
+  canvas.dataset.maskPixels = String(pixels);
+}
+
+function samSummary(analysis) {
+  if (!analysis) return '<span class="muted">SAM: not started.</span>';
+  const head = `SAM 3.1 · prompt "${analysis.prompt ?? "none"}" · <b id="evidence-sam-status">${analysis.status}</b>`;
+  if (analysis.status === "Complete") return `${head} · ${analysis.boxes.length} object(s) · ${(analysis.duration_ms / 1000).toFixed(1)} s`;
+  if (analysis.reason) return `${head} · ${analysis.reason}`;
+  return head;
+}
+
 function render(detail) {
   const loc = detail.location;
   const frame = detail.frame;
+  const sam = detail.analyses.find((a) => a.kind === "sam");
   const frameHtml = frame.status === "Available"
-    ? `<img id="evidence-frame" src="${frame.url}" alt="Glasses frame at ${fmt(frame.source_ms)}">
-       <div class="source">${frame.label} · ${frame.scene} · frame at ${fmt(frame.source_ms)}, ${frame.alignment_error_ms} ms from the incident</div>`
+    ? `<div class="frame"><img id="evidence-frame" src="${frame.url}" alt="Glasses frame at ${fmt(frame.source_ms)}">
+       <canvas id="evidence-mask" aria-hidden="true"></canvas></div>
+       <div class="source">${frame.label} · ${frame.scene} · frame at ${fmt(frame.source_ms)}, ${frame.alignment_error_ms} ms from the incident</div>
+       <div id="evidence-sam" class="source">${samSummary(sam)}</div>`
     : `<div class="unavailable" id="evidence-frame-unavailable">Frame unavailable: ${frame.reason}</div>`;
   const actions = detail.actions.length
     ? detail.actions.map((a) => `<li>${a.kind} → ${a.target ?? ""} <span class="muted">${new Date(a.created_at + "Z").toLocaleTimeString()}</span></li>`).join("")
@@ -77,6 +124,7 @@ function render(detail) {
     <h3>Actions</h3>
     <ul id="evidence-actions">${actions}</ul>`;
   drawImu($("evidence-imu"), detail);
+  if (sam?.status === "Complete" && $("evidence-frame")) drawMask($("evidence-frame"), $("evidence-mask"), sam.output_text);
 }
 
 export async function openIncident(id) {
@@ -87,7 +135,7 @@ export async function openIncident(id) {
   }
   const detail = await r.json();
   openId = id;
-  openKey = `${detail.state}:${detail.actions.length}`;
+  openKey = `${detail.state}:${detail.actions.length}:${detail.analyses.map((a) => a.status).join(",")}`;
   render(detail);
 }
 
@@ -96,5 +144,5 @@ export function refreshOpenIncident(snapshot) {
   const inc = snapshot.incidents.find((i) => i.id === openId);
   if (!inc) return;
   const actions = snapshot.actions.filter((a) => a.incident_id === openId).length;
-  if (`${inc.state}:${actions}` !== openKey) openIncident(openId);
+  if (`${inc.state}:${actions}:${inc.analysis_status ?? ""}` !== openKey) openIncident(openId);
 }

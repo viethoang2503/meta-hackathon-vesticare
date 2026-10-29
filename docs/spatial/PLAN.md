@@ -33,6 +33,16 @@ Ngày 4 đã xong ngày 2026-10-29. Kết quả:
 - Flow `spatial_run.py` chạy trên instance cô lập: Start S2 bằng nút, mở incident bằng click lên marker 3D, ngăn bằng chứng hiện "Foot of the stairs", ảnh tại 24,00 s lệch 60 ms, trạng thái chuyển sang "Caregiver alerted" sau đếm ngược, refresh vẫn đúng run, Stop ghi `user_stop`. Ảnh ở `docs/spatial/evidence/day4/`.
 - Bộ test: 143 passed.
 
+Ngày 5 đã xong ngày 2026-10-29. Kết quả:
+
+- Mỗi incident có một bản ghi phân tích SAM trong bảng `spatial_analyses` với trạng thái Running, Complete, NoMatch, Failed, TimedOut, Cancelled hoặc Unavailable. Prompt lấy từ zone (`hazard_prompt`), ảnh là ảnh xuất gần thời điểm incident nhất.
+- Phân tích chạy nền, tách khỏi đếm ngược: test xác nhận SAM chậm không làm chậm cảnh báo. Stop đặt phân tích dở thành Cancelled, run timeout thành TimedOut, restart thành Failed; câu trả lời đến muộn không ghi đè.
+- Backend lưu nguyên output của SAM; trình duyệt giải mã mask bằng `@meta-sam/parser` 0.1.0 (tải vào `dashboard/spatial/vendor/meta-sam-parser/` kèm SAM License) và vẽ lên ảnh trong ngăn bằng chứng.
+- Test dùng một output SAM thật đã ghi ở Ngày 3, không gọi mạng và chạy với `MODEL_API_KEY` rỗng.
+- Chạy thật trên instance cô lập: ảnh `S2-024000`, prompt `stairs`, Complete, 1 vật thể, 3,0 s, mask 70.421 pixel trên ảnh 640×480 và bám các bậc (`docs/spatial/evidence/day5/evidence-drawer-sam.png`).
+- Bộ test: 148 passed.
+- Chưa làm: IoU giữa mask SAM và mask đúng render từ scene.
+
 ## Ngày 1 có gate bắt buộc
 
 ### G1. Model và ý nghĩa nhãn

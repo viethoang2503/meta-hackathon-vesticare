@@ -128,3 +128,9 @@ WEARER_CANCEL_WINDOW_SECONDS = 7
 # Bang chung cua incident (docs/spatial/SPEC.md, bang tham so)
 FRAME_ALIGNMENT_TOLERANCE_MS = 250
 IMU_DETAIL_MAX_SECONDS = 10
+
+# Phan tich SAM cho incident (docs/spatial/SPEC.md)
+MODEL_API_BASE = "https://api.meta.ai/v1"
+MODEL_API_KEY = os.getenv("MODEL_API_KEY", "")
+SAM_MODEL = "sam-3.1"
+ANALYSIS_TIMEOUT_SECONDS = 45

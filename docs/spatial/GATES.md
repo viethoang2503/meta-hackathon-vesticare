@@ -141,6 +141,10 @@ Bốn preset camera kính trong `assets/homes/home1/manifest.json`, render bởi
 
 Chưa kiểm tra: IoU với mask đúng render từ scene. Ngày 5 chạy lại nếu nội thất hoặc ánh sáng còn thay đổi.
 
+### Ngày 5: SAM trên ảnh của incident trong run thật
+
+Run S2 trên instance cô lập, phân tích nền do backend gọi: ảnh `S2-024000` (640×480, lệch 60 ms so với incident), prompt `stairs`, trạng thái Complete, 1 vật thể, box (66,226)-(417,479), 3,0 s. Trình duyệt giải mã mask bằng `@meta-sam/parser` được 70.421 pixel và mask bám các bậc thang (`docs/spatial/evidence/day5/evidence-drawer-sam.png`). Một lần gọi, khoảng 0,0025 USD.
+
 ## G3. Tool calling
 
 Chạy bằng `curl` tới `https://api.meta.ai/v1`, key lấy từ `MODEL_API_KEY` trong `backend/.env`.

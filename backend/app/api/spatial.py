@@ -50,6 +50,7 @@ class IncidentOut(BaseModel):
     notification_status: str | None
     state: str | None
     location: LocationOut
+    analysis_status: str | None
 
 
 class ActionOut(BaseModel):

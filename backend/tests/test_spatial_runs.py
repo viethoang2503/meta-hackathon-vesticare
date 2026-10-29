@@ -25,7 +25,8 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import schemas  # noqa: E402,F401
-from app.models.schemas import SpatialSession  # noqa: E402
+from app.models.schemas import SpatialAnalysis, SpatialSession  # noqa: E402
+from app.services.sam_client import BOX, SamError, SamResult  # noqa: E402
 from app.services.fall_detection import FallDetectionService, fall_detection_service  # noqa: E402
 from app.services.monitoring import StreamMonitor  # noqa: E402
 from app.services.spatial_runs import (  # noqa: E402
@@ -39,6 +40,13 @@ from app.services.spatial_runs import (  # noqa: E402
 
 # The SisFall impact; the model also fires at 14720 ms while still walking, which the stillness rule drops.
 S2_FALL_START_MS = 23940
+SAM_OUTPUT = (Path(__file__).parent / "fixtures" / "sam_stairs_output.txt").read_text()
+
+
+def recorded_sam(image, mime, prompt):
+    """A real SAM 3.1 answer recorded on day 3 (one stairs mask); no network in tests."""
+    boxes = [dict(zip(("x1", "y1", "x2", "y2", "w", "h"), map(int, m))) for m in BOX.findall(SAM_OUTPUT)]
+    return SamResult(SAM_OUTPUT, boxes, 2300, "sam-3.1")
 
 
 class PausedAfterStatusRead(OrmSession):
@@ -70,7 +78,7 @@ class SpatialRunsTest(unittest.TestCase):
     def manager(self, **kwargs):
         return SpatialRunManager(
             session_factory=self.db,
-            **{"realtime": False, "run_timeout_seconds": 0.5, "wearer_cancel_seconds": 0.2, **kwargs},
+            **{"realtime": False, "run_timeout_seconds": 0.5, "wearer_cancel_seconds": 0.2, "segmenter": recorded_sam, **kwargs},
         )
 
     async def wait_for_incident(self, sid):
@@ -118,6 +126,74 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertEqual(len(times), 474)
         self.assertEqual(detail["imu"]["source"], "Scenario-paired recording")
         self.assertEqual(snap["incidents"][0]["location"]["zone_label"], "Foot of the stairs")
+
+    def analyses_after_run(self, segmenter, **kwargs):
+        async def go():
+            m = self.manager(run_timeout_seconds=60, segmenter=segmenter, **kwargs)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            while not [a for a in incident_detail(incident_id, self.db)["analyses"] if a["status"] != "Running"]:
+                await asyncio.sleep(0.05)
+            await m.stop(sid)
+            return incident_detail(incident_id, self.db)["analyses"]
+        return asyncio.run(go())
+
+    def test_sam_analyses_the_frame_of_the_fall_with_the_zone_prompt(self):
+        [a] = self.analyses_after_run(recorded_sam)
+        self.assertEqual((a["kind"], a["status"], a["prompt"], a["frame_id"]), ("sam", "Complete", "stairs", "S2-024000"))
+        self.assertEqual(a["boxes"], [{"x1": 77, "y1": 134, "x2": 251, "y2": 245, "w": 329, "h": 246}])
+        self.assertEqual(a["output_text"], SAM_OUTPUT)
+
+    def test_sam_finding_nothing_is_nomatch_not_an_invented_mask(self):
+        [a] = self.analyses_after_run(lambda image, mime, prompt: SamResult("", [], 500, "sam-3.1"))
+        self.assertEqual((a["status"], a["boxes"], a["output_text"]), ("NoMatch", [], ""))
+
+    def test_sam_error_is_stored_as_failed_with_its_reason(self):
+        def broken(image, mime, prompt):
+            raise SamError("Failed", "HTTP 500: upstream")
+        [a] = self.analyses_after_run(broken)
+        self.assertEqual((a["status"], a["reason"], a["output_text"]), ("Failed", "HTTP 500: upstream", None))
+
+    def test_stop_cancels_a_running_analysis_and_a_late_answer_is_not_stored(self):
+        release = threading.Event()
+
+        def slow(image, mime, prompt):
+            release.wait(10)
+            return recorded_sam(image, mime, prompt)
+
+        async def go():
+            m = self.manager(run_timeout_seconds=60, segmenter=slow)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            while not incident_detail(incident_id, self.db)["analyses"]:
+                await asyncio.sleep(0.05)
+            await m.stop(sid)
+            release.set()
+            await m.wait(sid)
+            return incident_detail(incident_id, self.db)
+        detail = asyncio.run(go())
+        [a] = detail["analyses"]
+        self.assertEqual((a["status"], a["reason"], a["output_text"]), ("Cancelled", "user_stop", None))
+
+    def test_a_slow_analysis_does_not_delay_the_caregiver_alert(self):
+        release = threading.Event()
+
+        def slow(image, mime, prompt):
+            release.wait(10)
+            return recorded_sam(image, mime, prompt)
+
+        async def go():
+            m = self.manager(run_timeout_seconds=60, segmenter=slow)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            await asyncio.sleep(0.6)
+            detail = incident_detail(incident_id, self.db)
+            release.set()
+            await m.stop(sid)
+            return detail
+        detail = asyncio.run(go())
+        self.assertEqual(detail["state"], "alerted")
+        self.assertEqual(detail["analyses"][0]["status"], "Running")
 
     def test_s1_walk_produces_no_incident(self):
         snap = self.run_to_end("S1")
@@ -223,7 +299,7 @@ class SpatialRunsTest(unittest.TestCase):
         db = sessionmaker(bind=self.engine, class_=PausedAfterStatusRead, autocommit=False, autoflush=False)
 
         async def go():
-            m = SpatialRunManager(session_factory=db, realtime=False, run_timeout_seconds=60)
+            m = SpatialRunManager(session_factory=db, realtime=False, run_timeout_seconds=60, segmenter=recorded_sam)
             sid = await m.start("S2")
             self.assertTrue(await asyncio.to_thread(gate["reached"].wait, 60), "ingest never read the session")
             stopping = asyncio.create_task(m.stop(sid))
@@ -259,7 +335,12 @@ class SpatialRunsTest(unittest.TestCase):
             db.add(SpatialSession(id="orphan", scenario_id="S2", status="Running", started_at=_utcnow(),
                                   source_offset_ms=3000, recording_ended=False, model_source="keras"))
             db.commit()
+            db.add(SpatialAnalysis(session_id="orphan", incident_id=1, kind="sam", status="Running", created_at=_utcnow()))
+            db.commit()
         self.assertEqual(self.manager().mark_interrupted_runs(), 1)
+        with self.db() as db:
+            analysis = db.query(SpatialAnalysis).one()
+            self.assertEqual((analysis.status, analysis.reason), ("Failed", "session_interrupted"))
         snap = session_snapshot("orphan", self.db)
         self.assertEqual((snap["status"], snap["end_reason"]), ("Interrupted", "session_interrupted"))
 
