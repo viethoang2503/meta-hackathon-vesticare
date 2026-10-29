@@ -1,23 +1,34 @@
 # Đặc tả MVP 1
 
-Bản v0.2. Phạm vi là demo web một tab cho một người thực hiện trong 10 ngày. Hành vi dưới đây là hợp đồng dự kiến, chưa phải tính năng đã chạy. Các giá trị cấu hình nằm ở bảng tham số cuối tài liệu.
+Bản v0.3. Phạm vi là demo web một tab cho một người thực hiện trong 10 ngày. Hành vi dưới đây là hợp đồng dự kiến, chưa phải tính năng đã chạy. Các giá trị cấu hình nằm ở bảng tham số cuối tài liệu.
+
+## Thay đổi từ v0.2
+
+Gate G1 và hai thí nghiệm C, D trong [GATES.md](GATES.md) cho thấy lớp INSTABILITY không phân biệt được mất thăng bằng với đi lại bình thường. Người khỏe đi cầu thang bị báo 100% theo model gốc. Khi biết trước hoạt động, IMU vẫn không tách được bệnh nhân với người khỏe trên cầu thang (AUC 0,49). Bộ dữ liệu không có sự kiện suýt ngã.
+
+Vì vậy v0.3 bỏ mức High dựa trên IMU. Cảnh báo phòng ngừa chuyển sang bối cảnh: zone đã khai báo, có camera xác nhận. IMU chỉ dùng cho FALL, nhánh đã qua gate.
 
 ## Người dùng và câu chuyện
 
-Người đeo nhận cảnh báo ngắn và có thể bấm "I'm OK" trên HUD mô phỏng. Người chăm sóc chọn incident trong căn nhà 3D để xem IMU, frame, SAM mask, giải thích của agent và lịch sử phản hồi.
+Người đeo nhận lời nhắc phòng ngừa trên HUD kính mô phỏng khi đi vào khu vực nguy hiểm. Khi ngã, HUD hỏi "Are you OK?". Người chăm sóc chọn incident trong căn nhà 3D để xem IMU, frame, SAM mask, giải thích của agent và lịch sử phản hồi.
 
-Một kịch bản đi từ chuyển động bình thường tới model-predicted motion risk ở gần cầu thang. HUD hỏi người đeo trước. Không phản hồi đúng hạn thì cảnh báo liên hệ đầu tiên. Người chăm sóc chưa xác nhận đúng hạn thì chuyển liên hệ thứ hai. Một kịch bản khác có FALL và báo người chăm sóc ngay.
+Camera và IMU làm hai việc khác nhau. Camera cho biết phía trước có gì nguy hiểm. IMU cho biết người đeo có ngã thật hay không.
 
-Tên hiển thị mặc định của output INSTABILITY là "Model-predicted motion risk". Chỉ dùng cách gọi mạnh hơn khi nguồn nhãn và bằng chứng độc lập hỗ trợ. Việc vượt qua một negative test không tự xác nhận ý nghĩa lâm sàng của lớp.
+Kịch bản S1: người đeo đi trong nhà buổi tối, vào vùng cầu thang. HUD nhắc "Stairs ahead. Use the handrail." Camera chụp khung hình tại thời điểm đó và SAM xác nhận có cầu thang. Không ai bị báo.
+
+Kịch bản S2: người đeo ngã gần cầu thang. Hệ thống báo liên hệ 1 ngay và HUD hỏi "Are you OK?". Người chăm sóc chưa xác nhận đúng hạn thì chuyển liên hệ 2. Agent phân tích khung hình và đề xuất sửa môi trường.
+
+Output INSTABILITY của model vẫn được lưu cùng xác suất, nhưng không tạo incident, không hiện trên HUD và không vào câu chuyện demo.
 
 ## Phạm vi
 
 | Trong MVP 1 | Sau MVP 1 |
 |---|---|
 | Nhà nhỏ đủ nội thất, camera/HUD, Start/Stop, incident timeline và evidence drawer. | Nhà nhiều tầng, house editor, preview cải tạo và không gian cộng tác. |
-| Replay qua classifier thật, SAM thật và một agent dùng tools có giới hạn. | Hỏi lịch sử tự do, text-to-SQL và báo cáo tuần. |
-| Người đeo phản hồi, caregiver acknowledge và escalation mô phỏng. | Gửi Telegram thật và tích hợp kính hoặc IMU live vào luồng mới. |
-| Lưu session, incident, nguồn bằng chứng và trạng thái analysis; phục hồi UI khi refresh. | Pause/Resume, job queue có lease/retry, khôi phục detector và đồng bộ nhiều tab. |
+| Replay qua classifier thật cho FALL, SAM thật và một agent dùng tools có giới hạn. | Hỏi lịch sử tự do, text-to-SQL và báo cáo tuần. |
+| Lời nhắc phòng ngừa theo zone, có SAM xác nhận khung hình. | Điểm dáng đi theo tuần từ IMU (thí nghiệm D: AUC 0,73 theo người). |
+| Người đeo phản hồi khi ngã, caregiver acknowledge và escalation mô phỏng. | Phát hiện suýt ngã thật, cần thu thập dữ liệu có sự kiện suýt ngã. |
+| Lưu session, incident, nguồn bằng chứng và trạng thái analysis; phục hồi UI khi refresh. | Gửi Telegram thật, kính hoặc IMU live, Pause/Resume, job queue có lease/retry và đồng bộ nhiều tab. |
 
 UI và cảnh báo dùng tiếng Anh. Âm thanh là tùy chọn. Clip có thể được thay bằng keyframes đồng bộ. Các bước kiểm thử failure chạy riêng với câu chuyện ba phút trong [DEMO.md](DEMO.md).
 
@@ -41,61 +52,61 @@ Workspace có góc toàn nhà, camera kính, timeline, evidence drawer và Start
 
 Start tạo session mới và chạy 1x. Một replay task trong backend đọc mẫu theo thứ tự. P0 có một session active, một tab điều khiển. Chạy lại tạo ID mới và context detector mới.
 
-Stop kết thúc run và chặn hành động mới của task còn chờ. Analysis chưa hoàn tất chuyển Cancelled. Session cũng có timeout tự kết thúc, lưu end_reason và đánh dấu công việc còn dở là hết hạn thay vì thành công. Hết file IMU, session tiếp tục Running để xử lý analysis và deadline còn lại, camera giữ frame cuối và UI hiện "Recording ended". Source offset giữ ở cuối recording; đồng hồ của run vẫn tiếp tục. Scenario được kiểm tra để có đủ thời gian cho toàn bộ chuỗi deadline trước timeout.
+Stop kết thúc run và chặn hành động mới của task còn chờ. Analysis chưa hoàn tất chuyển Cancelled. Session cũng có timeout tự kết thúc, lưu end_reason và đánh dấu công việc còn dở là hết hạn thay vì thành công. Hết file IMU, session tiếp tục Running để xử lý analysis và deadline còn lại, camera giữ frame cuối và UI hiện "Recording ended". Scenario được kiểm tra để có đủ thời gian cho toàn bộ chuỗi deadline trước timeout.
 
-Sau Stop hoặc timeout, session có trạng thái Stopped, lần lượt với end_reason=user_stop hoặc end_reason=timeout. Người xem vẫn chọn lại incident đã lưu. Refresh tải snapshot của session hiện có. Reconnect SSE cũng tải snapshot. Khi DB hoạt động bình thường, startup sau restart đánh dấu mọi run còn Running là Interrupted và cho phép Start run mới. Trạng thái session chỉ gồm Running, Stopped và Interrupted.
+Sau Stop hoặc timeout, session có trạng thái Stopped, lần lượt với end_reason=user_stop hoặc end_reason=timeout. Người xem vẫn chọn lại incident đã lưu. Refresh và reconnect SSE tải snapshot của session hiện có. Khi DB hoạt động bình thường, startup sau restart đánh dấu mọi run còn Running là Interrupted và cho phép Start run mới. Trạng thái session chỉ gồm Running, Stopped và Interrupted.
 
-## Policy và hai loại phản hồi
+IMU của scenario là bản ghi thật từ bộ dữ liệu, được ghép theo timeline (Scenario-paired). Đoạn ghép được chọn sau khi chạy detector trên toàn bộ file scenario và lưu kết quả đó. Không chọn đoạn bằng cách sửa ngưỡng.
+
+## Policy
 
 Policy chạy bằng code. Mọi gửi cảnh báo trong P0 dùng simulated sink. Phản hồi người đeo và xác nhận người chăm sóc là dữ liệu riêng.
 
-| Điều kiện | Mức | Hành vi |
+| Sự kiện | Loại | Hành vi |
 |---|---|---|
-| Output motion risk chưa có hazard context. | Caution. | Ghi incident, hiển thị thông tin và xếp analysis. |
-| Output motion risk trong authored zone có fall_exposure. | High. | Hiện "Are you OK?" và bắt đầu hạn phản hồi người đeo. |
-| Người đeo bấm "I'm OK" đúng hạn ở High. | Giữ High. | Lưu self-report và kết thúc bước hỏi của incident; chưa gửi caregiver alert vì bước đó. |
-| High hết hạn người đeo chưa phản hồi. | Giữ High. | Báo contact 1 và bắt đầu hạn caregiver acknowledgement. |
-| Detector xác nhận FALL. | Critical. | Báo contact 1 ngay, bắt đầu hạn caregiver; không chờ self-report, SAM hoặc agent. |
-| Người đeo bấm "I'm OK" với FALL. | Giữ Critical. | Ghi thông tin kèm incident; caregiver alert và escalation vẫn có hiệu lực. |
-| Đã báo contact 1, hết hạn caregiver chưa ack. | Giữ mức. | Chuyển contact 2 một lần. |
-| Caregiver ack trước dispatch contact 2. | Giữ mức. | Lưu ack và chặn escalation chưa gửi. |
+| Người đeo đi vào zone có `fall_exposure` trong scene manifest. | Advisory. | HUD hiện `advisory_text` của zone ngay. Lấy frame camera tại thời điểm vào zone và gọi SAM với `hazard_prompt` của zone. Không báo ai. |
+| Vào lại cùng zone trong `advisory_cooldown_seconds`. | Không hiển thị. | Ghi log, không hiện lại HUD. |
+| Detector xác nhận FALL. | Critical incident. | Báo contact 1 ngay, hiện "Are you OK?" trên HUD, bắt đầu hạn caregiver và xếp analysis. Không chờ self-report, SAM hoặc agent. |
+| Người đeo bấm "I'm OK" sau FALL. | Thông tin. | Lưu self-report kèm thời điểm và hiển thị cho người chăm sóc. Không hủy cảnh báo hay escalation. |
+| Đã báo contact 1, hết hạn caregiver chưa ack. | Escalation. | Chuyển contact 2 một lần. |
+| Caregiver ack trước khi gửi contact 2. | Ack. | Lưu ack và chặn escalation chưa gửi. |
 
-Hazard context P0 đến từ `stairs_approach` hoặc `stairs_landing` được scene manifest đánh dấu `fall_exposure`. Decision ghi rõ Authored location/context. Một mask cầu thang tự nó chưa cho biết khoảng cách hoặc nguyên nhân mất thăng bằng. SAM cung cấp quan sát độc lập; kết quả thiếu hoặc trái với mapping phải được hiển thị.
+Advisory không phải incident. Nó được ghi vào action log của session với zone, thời điểm, frame ID và kết quả SAM. HUD không chờ SAM. Nếu SAM không tìm thấy vật thể, timeout hoặc lỗi, advisory vẫn đã hiện và log ghi rõ "Not visually confirmed" kèm trạng thái.
 
-Rule High là policy minh họa. Gate ý nghĩa nhãn phải hoàn tất trước khi chốt cách kể câu chuyện. Nếu semantics còn là proxy, giữ tên motion risk và công bố giới hạn; không trình bày cảnh báo High như kết luận y khoa.
+Hazard context đến từ zone đã khai báo, ghi là Authored location. SAM cung cấp xác nhận hình ảnh độc lập, ghi là Visual confirmation. Không gộp hai nguồn thành một kết luận. Một mask cầu thang không cho biết khoảng cách hoặc nguyên nhân ngã.
 
-Nhiều cửa sổ liên tục được gom thành một incident. Khoảng NORMAL đủ dài đóng episode. FALL trong episode mở nâng mức ngay dù vừa có cảnh báo trước. Khi mức tăng, đặt lại caregiver ack hiện tại, lưu log ack cũ và vô hiệu hóa self-report của mức thấp hơn đối với quyết định mới. Tác vụ gửi mức thấp chưa dispatch được bỏ qua.
+Mỗi FALL đã xác nhận tạo một incident. FALL mới trong khi incident trước còn mở và cách nhau dưới `fall_merge_seconds` được gộp vào incident đó. Cooldown của detector không được lọc mất một FALL đã xác nhận.
 
-Ack và "I'm OK" gửi kèm mức đang hiển thị trong trường `seen_severity`. Request của mức cũ được ghi là stale, không xác nhận mức mới. P0 dùng kiểm tra enum severity, không có revision protocol. Caregiver acknowledgement ghi việc nhận xử lý, không khẳng định người đeo đã an toàn.
+Caregiver ack ghi việc nhận xử lý, không khẳng định người đeo đã an toàn. Ack lặp lại trả cùng kết quả, không tạo ack mới.
 
 ## AI và bằng chứng
 
-Một agent Muse Spark gọi các tools lấy context, lấy frame, segment frame và lấy environmental fixes. Reasoning có thể dùng Spark; Wonder chỉ được thêm khi cần và đã kiểm tra quyền/độ trễ. Kiểm tra các incident vừa có để áp dụng policy không đồng nghĩa triển khai giao diện hỏi lịch sử.
+Một agent Muse Spark (`muse-spark-1.3`) phân tích mỗi FALL incident. Agent gọi tools lấy context, lấy frame, segment frame và lấy environmental fixes. Wonder chỉ được thêm khi cần và đã đo độ trễ. Advisory chỉ gọi SAM, không gọi agent.
 
-Agent trả summary, observations, evidence IDs, uncertainties và recommendation IDs. Logger ghi tool inputs/results và decision summary. Backend sở hữu severity floor và notification. FALL giữ Critical bất kể output model reasoning.
+Agent trả summary, observations, evidence IDs, uncertainties và recommendation IDs. Logger ghi tool inputs/results và decision summary. Backend sở hữu severity và notification. Output của agent không thay đổi policy.
 
 Frame bằng chứng có ID, scene/camera version, source offset và nhãn Rendered frame hoặc Recorded video. IMU ghi recording ID, khoảng mẫu, đơn vị và nguồn. Ghép các nguồn theo kịch bản được ghi là Scenario-paired, không gọi là ghi đồng thời người thật.
 
 SAM nhận pixel nguồn và prompt vật thể. Ground truth của scene không được đưa vào prompt như đáp án perception. Mask nằm trên đúng frame đã phân tích. Analysis hỗ trợ Pending, Running, Complete, NoMatch, Failed, TimedOut và Cancelled. Thiếu frame dùng Unavailable. Failure không được thay bằng mask hoặc kết quả bịa.
 
-Nếu render không qua gate SAM Ngày 1, phương án dự phòng là clip iPhone quay trước và ánh xạ zone thủ công. Camera ảo vẫn có thể dùng để điều hướng nhà; khung evidence/HUD ghi rõ nguồn clip. Cần kiểm tra lại frame alignment và scope claim trước khi dựng phần còn lại.
+G2 đã đạt trên ảnh nhà khối hộp. Ngày 5 chạy lại `backend/tools/gate_sam.py` trên ảnh nhà đã có nội thất. Nếu kết quả kém, dùng clip iPhone quay trước và ánh xạ zone thủ công, ghi rõ nguồn.
 
 ## Tiêu chí nghiệm thu
 
 | ID | Điều kiện đạt |
 |---|---|
 | AC01 | Nhà có đủ inventory đã chốt; camera/HUD và chọn marker dùng được trên máy demo. |
-| AC02 | Model/scaler thực sự load, class/unit đúng; provenance, kiểm thử semantics và giới hạn được ghi lại. |
+| AC02 | Model/scaler thực sự load; kết quả G1, C, D và giới hạn được ghi trong GATES.md. INSTABILITY không tạo incident hay HUD. |
 | AC03 | Chọn incident mở đúng IMU interval, frame và nguồn của cùng session. |
 | AC04 | SAM trả mask thật trên chính loại ảnh dùng trong demo; mask gắn đúng ảnh, có trạng thái NoMatch/lỗi. |
 | AC05 | Có vòng agent dùng tool thật và summary liên kết evidence IDs. |
-| AC06 | High nhận "I'm OK" đúng hạn thì không gửi caregiver alert do bước hỏi đó; không phản hồi thì báo contact 1. |
-| AC07 | FALL sau motion risk trong dưới 10 giây vẫn lên Critical và báo ngay; self-report cũ hoặc mới không chặn gửi. |
+| AC06 | Vào zone `fall_exposure` hiện advisory trên HUD trong `advisory_hud_latency_ms`, không gửi thông báo cho ai; kết quả SAM được ghi kèm advisory; vào lại trong cooldown không hiện lại. |
+| AC07 | FALL tạo Critical incident, báo contact 1 và hiện "Are you OK?" ngay; self-report được lưu nhưng không hủy cảnh báo; cooldown detector không chặn FALL. |
 | AC08 | Ack trước hạn chặn contact 2; không ack thì contact 2 nhận một thông báo mô phỏng. |
 | AC09 | Refresh/reconnect phục hồi snapshot; hai lần Start có detector context và incident riêng. |
-| AC10 | Với DB hoạt động bình thường, Stop chặn action muộn và startup sau restart đánh dấu run cũ Interrupted, không resume detector. Commit lỗi chỉ yêu cầu best-effort dừng/cancel task, log và ghi Interrupted nếu còn ghi được; không cam kết transactional recovery hoặc chặn mọi side effect trong lỗi storage. |
-| AC11 | Thiếu frame, lỗi/schema sai hoặc timeout Meta không chặn nhánh FALL và hiển thị đúng trạng thái. |
-| AC12 | Nhật ký và recording demo thể hiện đúng nguồn; FPS và latency công bố đều có số đo thật. |
+| AC10 | Với DB hoạt động bình thường, Stop chặn action muộn và startup sau restart đánh dấu run cũ Interrupted, không resume detector. Commit lỗi chỉ yêu cầu best-effort dừng/cancel task, log và ghi Interrupted nếu còn ghi được. |
+| AC11 | Thiếu frame, lỗi/schema sai hoặc timeout Meta không chặn nhánh FALL hay advisory, và hiển thị đúng trạng thái. |
+| AC12 | Nhật ký và recording demo thể hiện đúng nguồn; FPS, latency và tỉ lệ báo nhầm FALL công bố đều có số đo thật. |
 
 ## Tham số demo tập trung
 
@@ -106,10 +117,11 @@ Các giá trị Default bên dưới là cấu hình khởi đầu để đo. Đ
 | sample_rate_hz | 50 | Nhịp dữ liệu IMU hiện tại. |
 | window_samples | 100 | Cửa sổ detector hiện tại. |
 | fall_confirmation_seconds | 0.5 | Cơ chế hiện tại; nếu đổi inference stride phải xác nhận lại theo thời gian. |
-| fall_threshold, instability_threshold, svm_fall_threshold | Theo config/model đã kiểm chứng ở G1 | Ghi cả hard-rule source và model output; pin trong session. |
-| normal_gap_seconds | Chốt bằng fixtures ở G1 | Khoảng NORMAL dùng để tách episode. |
-| wearer_response_timeout_seconds | 10 | Thời gian High chờ self-report. |
-| caregiver_ack_timeout_seconds | 20 | Tính từ lúc contact 1 thực sự nhận thông báo mô phỏng của mức hiện tại. |
+| fall_threshold, svm_fall_threshold | 0.55 và 2.5 g, theo config hiện tại | Ghi nguồn quyết định (model hoặc luật SVM); pin trong session. |
+| fall_merge_seconds | 10 | FALL cách nhau dưới khoảng này được gộp vào một incident. |
+| advisory_cooldown_seconds | 60 | Không hiện lại advisory của cùng zone trong khoảng này. |
+| advisory_hud_latency_ms | 1000 | Mục tiêu từ lúc vào zone tới lúc HUD hiện. |
+| caregiver_ack_timeout_seconds | 20 | Tính từ lúc contact 1 nhận thông báo mô phỏng. |
 | run_timeout_seconds | 180 | Hạn run demo; scenario phải đủ chỗ cho các deadline dự kiến. |
 | analysis_timeout_seconds | 45 | Budget toàn bộ analysis, không chỉ một HTTP request. |
 | max_tool_calls | 5 | Budget tool calls mỗi incident; failure có output riêng. |
@@ -119,4 +131,4 @@ Các giá trị Default bên dưới là cấu hình khởi đầu để đo. Đ
 | target_overview_fps | 30 | Mục tiêu đo trên máy demo. |
 | target_confirmed_detection_to_incident_ms | 1000 | Mục tiêu local sau khi detector xác nhận; báo riêng window/confirmation delay. |
 
-Luật lặp lại nhiều episode rồi nâng mức, thống kê lịch sử, SQL và báo cáo tuần thuộc backlog sau MVP 1. Mô tả dự thi hiện tại nằm trong [SUBMISSION.md](SUBMISSION.md) và chỉ nêu tính năng MVP 1.
+Luật nâng mức do nhiều sự kiện lặp lại, thống kê lịch sử, SQL và báo cáo tuần thuộc backlog. Mô tả dự thi nằm trong [SUBMISSION.md](SUBMISSION.md) và chỉ nêu tính năng MVP 1.

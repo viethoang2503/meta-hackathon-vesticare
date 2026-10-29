@@ -1,12 +1,12 @@
 # Kế hoạch triển khai MVP 1
 
-Bản v0.2 cho một người, 10 ngày. Đây là phân bổ dự kiến. [SPEC.md](SPEC.md) giữ phạm vi, AC và tham số. [DEMO.md](DEMO.md) giữ walkthrough ba phút.
+Bản v0.3 cho một người, 10 ngày. Đây là phân bổ dự kiến. [SPEC.md](SPEC.md) giữ phạm vi, AC và tham số. [DEMO.md](DEMO.md) giữ walkthrough ba phút.
 
 ## Checkpoint
 
 Một nhà một tầng, bốn phòng và chiếu nghỉ; một active replay, một tab và một agent. Ngày 1 kiểm tra hai giả thuyết có thể làm đổi câu chuyện. Ngày 8 khóa tính năng. Hai ngày cuối dành cho kiểm chứng, rehearsal và submission. Mọi mở rộng nằm sau nghiệm thu MVP 1.
 
-Lượt v0.2 chỉ cập nhật tài liệu. Chưa sửa config, cài TensorFlow, chạy inference hoặc gọi SAM.
+Ngày 1 đã xong ngày 2026-10-29. Kết quả ở [GATES.md](GATES.md): G2 và G3 đạt; G1 đạt phần load model và nhánh FALL, lớp INSTABILITY không đạt và không được dùng làm nguồn cảnh báo. Mục Ngày 1 bên dưới giữ lại làm hồ sơ.
 
 ## Ngày 1 có gate bắt buộc
 
@@ -41,31 +41,31 @@ Chạy một vòng tool calling thật, xác nhận model ID, output schema và 
 | Ngày | Công việc | Gate cuối ngày |
 |---|---|---|
 | 1 | G1, G2, G3. Chốt model claims, nguồn frame và config. | Có evidence thực hoặc quyết định giới hạn rõ ràng; chưa qua gate thì sửa giả thuyết trước khi làm tiếp phần phụ thuộc. |
-| 2 | Session riêng, replay nội bộ, incident grouping, FALL vượt cooldown; status DB và analysis task tách ingest. | AC07, phần session isolation của AC09. Xử lý commit lỗi ở mức best-effort của AC10. |
+| 2 | Model chạy qua `tf.function`; file IMU của S1/S2 và kết quả detector trên chúng; session riêng, replay nội bộ, FALL incident vượt cooldown; status DB và analysis task tách ingest. | Inference dưới 20 ms mỗi cửa sổ; S1 không có FALL, S2 có đúng một FALL incident; phần session isolation của AC09; phần FALL của AC07. Commit lỗi ở mức best-effort của AC10. |
 | 3 | Nhà một tầng/bốn phòng, cầu thang chiếu nghỉ, nội thất và camera. | Inventory đủ; style khớp frame G2; AC01. |
 | 4 | Timeline, frame lookup, marker và evidence drawer; Start/Stop. | AC03 và phần Stop/refresh của AC09/AC10. |
 | 5 | SAM adapter và lưu mask/status; kiểm tra ảnh sau hoàn thiện nội thất. | AC04, các trạng thái thiếu ảnh/NoMatch/lỗi. |
 | 6 | Agent tools, summary có evidence IDs và environmental fixes nhỏ. | AC05 và timeout không chặn FALL trong AC11. |
-| 7 | HUD I'm OK, caregiver ack và hai contact mô phỏng. | AC06, AC07, AC08; phản hồi stale không ảnh hưởng FALL. |
-| 8 | Hoàn thiện S1/S2 và các nhánh phản hồi T1/T2/T6, đo FPS/latency, kiểm tra Start/Stop/restart. | AC09 đến AC12 theo phạm vi bắt buộc và best-effort đã ghi; khóa tính năng. |
+| 7 | HUD advisory theo zone có SAM xác nhận, HUD "Are you OK?" khi ngã, caregiver ack và hai contact mô phỏng. | AC06, AC07, AC08. |
+| 8 | Hoàn thiện S1/S2 và các bài thử T1 đến T6, đo FPS/latency và tỉ lệ báo nhầm FALL, kiểm tra Start/Stop/restart. | AC09 đến AC12 theo phạm vi bắt buộc và best-effort đã ghi; khóa tính năng. |
 | 9 | Rehearse DEMO, kiểm tra chạy từ hướng dẫn, asset licences và recording. | Một vòng ba phút cùng evidence, lỗi còn lại được phân loại. |
 | 10 | Sửa lỗi cản demo, quay video, hoàn thiện submission và giới hạn. | Bản chạy, hướng dẫn, bảng AC và số đo thật. |
 
 Ngôi nhà được dựng sau gate ảnh thô. Nếu hoàn thiện nội thất làm đổi kết quả perception, chạy lại đúng frame demo ở Ngày 5. Không thêm SQL, report hoặc live hardware vào ngày còn dư.
 
-Chỉ có hai scenario source như trong [DEMO.md](DEMO.md): S1 có motion risk gần cầu thang; S2 có motion risk rồi FALL trong dưới 10 giây. Các lựa chọn phản hồi dùng lại hai scenario này.
+Chỉ có hai scenario như trong [DEMO.md](DEMO.md): S1 đi vào vùng cầu thang và không ngã; S2 có FALL gần cầu thang. IMU của cả hai là bản ghi thật từ bộ dữ liệu, ghép theo timeline. Đoạn ghép được chọn sau khi chạy detector, không chỉnh ngưỡng để ép kết quả.
 
 ## Kiểm chứng hành vi
 
 | ID | Bài thử | Kỳ vọng |
 |---|---|---|
-| T1 | High và I'm OK trước wearer deadline. | Self-report được lưu, bước hỏi đó không gửi contact 1; caregiver ack vẫn là dữ liệu riêng. |
-| T2 | High không phản hồi. | Contact 1 nhận một thông báo mô phỏng sau wearer deadline. |
-| T3 | Motion risk rồi FALL dưới 10 giây. | Critical và contact 1 ngay; cooldown cũ không chặn. |
-| T4 | FALL sau I'm OK hoặc caregiver ack ở High. | Trạng thái mức thấp không chặn Critical; caregiver ack hiện tại bị reset, log cũ còn. |
-| T5 | Request I'm OK/ack của High về sau khi đã Critical. | Applied false/stale; không xác nhận Critical. |
+| T1 | Vào zone cầu thang. | HUD hiện advisory trong mục tiêu latency; SAM chạy trên frame lúc vào zone và kết quả được ghi; không gửi thông báo. |
+| T2 | Vào lại zone cầu thang trong cooldown. | Không hiện lại HUD; log ghi lần vào lại. |
+| T3 | FALL ngay sau khi detector vừa tiêu thụ cooldown ở một cửa sổ trước. | Critical incident và contact 1 ngay; cooldown không chặn. |
+| T4 | Bấm "I'm OK" sau FALL. | Self-report được lưu và hiển thị; contact 1 đã nhận, hạn caregiver vẫn chạy. |
+| T5 | Hai FALL cách nhau dưới fall_merge_seconds. | Một incident, không gửi contact 1 lần thứ hai. |
 | T6 | Caregiver ack trước hạn, và một run khác không ack. | Run đầu chặn contact 2; run sau gửi contact 2 một lần. |
-| T7 | SAM timeout/NoMatch/response lỗi hoặc frame thiếu. | Hiển thị trạng thái đúng, không bịa mask; FALL vẫn được xử lý. |
+| T7 | SAM timeout/NoMatch/response lỗi hoặc frame thiếu. | Hiển thị trạng thái đúng, không bịa mask; FALL và advisory vẫn được xử lý. |
 | T8 | Stop khi Meta/timer đang chờ. | Không tạo notification mới từ callback muộn; late evidence được ghi nguồn nếu lưu. |
 | T9 | Restart giữa run khi DB hoạt động bình thường. | Run bị Interrupted; không tiếp tục detector với buffer sai. |
 | T10 | Refresh/reconnect và Start run mới. | Khôi phục snapshot đã commit; run mới không dùng chung buffer/count. |
@@ -79,7 +79,7 @@ Chỉ có hai scenario source như trong [DEMO.md](DEMO.md): S1 có motion risk 
 | Vấn đề | Điều chỉnh |
 |---|---|
 | Model/scaler chưa load. | Giải quyết G1 trước. Chưa công bố model thật đã chạy. |
-| Không có bằng chứng semantics hoặc thiếu raw recordings. | Ghi Inconclusive, dùng nhãn motion risk và giới hạn claims; chọn lại story/policy. |
+| Detector báo FALL trên đoạn S1. | Chọn đoạn IMU khác bằng cách chạy detector, ghi lại tỉ lệ báo nhầm; không chỉnh ngưỡng. |
 | SAM không nhận render. | Dùng quyết định G2 trước khi dựng nhà hoàn chỉnh; nếu dùng iPhone phải ghi nguồn và manual mapping. |
 | API reasoning chậm. | Một model reasoning, ít frame và tools; giới hạn theo SPEC. |
 | Nhà tốn thời gian. | Giữ bốn phòng đủ inventory, giảm chi tiết geometry và hiệu ứng. |
@@ -88,6 +88,6 @@ Chỉ có hai scenario source như trong [DEMO.md](DEMO.md): S1 có motion risk 
 
 ## Bằng chứng giao nộp
 
-Lưu kết quả G1/G2/G3, bảng T1 đến T11 và ghi nhận best-effort T12 riêng, ảnh/clip demo, model/config refs, loại dữ liệu, asset licences và hướng dẫn chạy. Dùng [SUBMISSION.md](SUBMISSION.md) làm mô tả dự thi theo MVP 1; luật lặp lại nhiều episode rồi nâng mức nằm trong backlog. Báo riêng thời gian detector gom/xác nhận cửa sổ, thời gian từ confirmed detection tới incident và thời gian API analysis.
+Lưu kết quả G1/G2/G3, bảng T1 đến T11, ghi nhận best-effort T12 riêng, tỉ lệ báo nhầm FALL, ảnh/clip demo, model/config refs, loại dữ liệu, asset licences và hướng dẫn chạy. Dùng [SUBMISSION.md](SUBMISSION.md) làm mô tả dự thi theo MVP 1; luật nâng mức do nhiều sự kiện lặp lại và điểm dáng đi theo tuần nằm trong backlog. Báo riêng thời gian detector gom/xác nhận cửa sổ, thời gian từ confirmed detection tới incident và thời gian API analysis.
 
 Đánh dấu AC chưa đạt hoặc chưa kiểm chứng. Chỉ công bố độ chính xác/độ trễ có bằng chứng phù hợp; demo synthetic không thay thế đánh giá thực địa.

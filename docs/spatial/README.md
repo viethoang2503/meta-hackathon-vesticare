@@ -1,8 +1,8 @@
 # Vesti-Care Spatial
 
-Thiết kế v0.2. Phạm vi hiện tại là cập nhật tài liệu MVP 1. Ứng dụng chưa được triển khai theo thiết kế này.
+Thiết kế v0.3. Ngày 1 (các gate) đã xong; ứng dụng chưa được triển khai theo thiết kế này.
 
-Vesti-Care Spatial kết hợp classifier IMU, Meta AI và một căn nhà 3D có nội thất. Người đeo phản hồi qua HUD kính mô phỏng. Người chăm sóc chọn sự kiện trong nhà để xem bằng chứng và xử lý cảnh báo.
+Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1, agent Muse Spark và một căn nhà 3D có nội thất. Camera cho biết phía trước có gì nguy hiểm; IMU cho biết người đeo có ngã thật hay không. Người đeo nhận lời nhắc và phản hồi qua HUD kính mô phỏng. Người chăm sóc chọn sự kiện trong nhà để xem bằng chứng và xử lý cảnh báo.
 
 ## Phạm vi đã chốt
 
@@ -11,7 +11,9 @@ Vesti-Care Spatial kết hợp classifier IMU, Meta AI và một căn nhà 3D c�
 - Nhà một tầng với bốn phòng và cầu thang ngắn lên chiếu nghỉ. Nội thất cách điệu, màu tự nhiên, bố cục rõ.
 - Start và Stop cho replay 1x. Mỗi lần chạy có session riêng.
 - Classifier, SAM và agent chạy thật. Nhà, vị trí, đường đi và HUD được mô phỏng.
-- High hỏi người đeo trước qua nút "I'm OK". FALL báo người chăm sóc ngay.
+- Vào vùng nguy hiểm thì HUD nhắc phòng ngừa, SAM xác nhận trên khung hình, không báo ai.
+- FALL báo người chăm sóc ngay và HUD hỏi "Are you OK?".
+- Không phát hiện mất thăng bằng hay suýt ngã bằng IMU (xem GATES.md).
 - Có xác nhận của người chăm sóc và escalation mô phỏng tới liên hệ thứ hai.
 - Mọi phần mở rộng bắt đầu sau khi MVP 1 hoàn thành và được nghiệm thu.
 
@@ -22,12 +24,13 @@ Vesti-Care Spatial kết hợp classifier IMU, Meta AI và một căn nhà 3D c�
 - [ARCHITECTURE.md](ARCHITECTURE.md) giải thích module, dữ liệu và xử lý bất đồng bộ tối thiểu.
 - [PLAN.md](PLAN.md) phân bổ 10 ngày và các gate trước khi triển khai tiếp.
 - [SUBMISSION.md](SUBMISSION.md) là mô tả dự thi đã thu gọn theo MVP 1.
+- [GATES.md](GATES.md) ghi kết quả đo của Ngày 1 và các thí nghiệm về lớp INSTABILITY.
 
 ## Điều gì chạy thật
 
 | Thành phần | Nguồn trong MVP 1 |
 |---|---|
-| IMU và classifier | Model thật trên replay; ghi rõ recording thực hay tín hiệu tổng hợp. |
+| IMU và classifier | Model thật trên replay bản ghi thật, chỉ dùng nhánh FALL. |
 | SAM và agent | API thật; trạng thái và bằng chứng của từng lần gọi được lưu. |
 | Nhà và camera chính | Render từ căn nhà đã dựng; phải qua gate SAM Ngày 1. |
 | Vị trí và đường đi | Metadata kịch bản, được gắn nhãn Authored location. |
@@ -38,11 +41,18 @@ Ghép IMU và hình ảnh khác nguồn theo timeline là scenario pairing, khô
 
 ## Những phát hiện đã kiểm tra
 
-Model và scaler nằm ở `ml/model_3class/`. Config hiện trỏ tới `ml/models_3class/`, cần sửa khi triển khai. Folder upload có ba model Keras, chưa có TFLite. Archive cho thấy input 100 mẫu với 7 kênh và output ba lớp; runtime TensorFlow và inference chưa được kiểm chứng trong lượt sửa tài liệu.
+Chi tiết và lệnh chạy lại nằm trong [GATES.md](GATES.md).
 
-`preprocess_vestibular.py` gán HS thành NORMAL. Chỉ BV/UV trong một số hoạt động, gồm Stairs, nhận INSTABILITY. Nhãn này là proxy theo cohort và hoạt động, chưa phải annotation từng episode mất thăng bằng. Chưa có manifest chứng minh weights upload dùng chính pipeline đó. Gate Ngày 1 phải xác minh cả provenance và hành vi model.
+- Model Keras và scaler load được từ `ml/model_3class/`. Bọc model bằng `tf.function` thì suy luận khoảng 1,5 ms mỗi cửa sổ.
+- Nhánh FALL phát hiện 300/300 file ngã SisFall của subject held-out. Có báo nhầm trên hoạt động thường ngày, phần lớn từ luật SVM ≥ 2,5 g.
+- Lớp INSTABILITY bật 71% với người khỏe đi bộ và 100% với người khỏe đi cầu thang. Train lại chỉ trên bộ vestibular (thí nghiệm C) thì model học loại hoạt động. Thêm thông tin hoạt động (thí nghiệm D) vẫn không tách được bệnh nhân với người khỏe trên cầu thang (AUC 0,49).
+- SAM 3.1 nhận đúng cầu thang ở 3 góc và không nhận nhầm ở ảnh không có cầu thang. Muse Spark gọi tool đúng schema.
 
-## Thay đổi từ v0.1
+## Lịch sử thay đổi
+
+v0.3 bỏ cảnh báo dựa trên lớp INSTABILITY sau kết quả G1, C, D. Phòng ngừa chuyển sang advisory theo zone có SAM xác nhận. Chỉ còn một mức incident (Critical khi ngã), nên bỏ mức High, hạn chờ người đeo và cơ chế ack theo mức.
+
+### v0.2
 
 v0.2 thu gọn nhà và lifecycle. Bỏ Pause/Resume, Settling, ack revision framework, durable job queue, batch sequence/hash và đồng bộ nhiều tab khỏi P0. Giữ session isolation, incident grouping, FALL vượt cooldown, status lưu trong DB và snapshot khi mở lại.
 
