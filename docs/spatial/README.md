@@ -44,7 +44,7 @@ Ghép IMU và hình ảnh khác nguồn theo timeline là scenario pairing, khô
 Chi tiết và lệnh chạy lại nằm trong [GATES.md](GATES.md).
 
 - Model Keras và scaler load được từ `ml/model_3class/`. Bọc model bằng `tf.function` thì suy luận khoảng 1,5 ms mỗi cửa sổ.
-- Nhánh FALL phát hiện 300/300 file ngã SisFall của subject held-out. Có báo nhầm trên hoạt động thường ngày, phần lớn từ luật SVM ≥ 2,5 g.
+- Nhánh FALL tạo incident trên 300/300 file ngã SisFall của subject tập TEST v2, nhưng cũng trên 78,5% file hoạt động thường ngày của người trẻ, phần lớn do model. Chưa xác minh được weights có được train trên các subject này hay không.
 - Lớp INSTABILITY bật 71% với người khỏe đi bộ và 100% với người khỏe đi cầu thang. Train lại chỉ trên bộ vestibular (thí nghiệm C) thì model học loại hoạt động. Thêm thông tin hoạt động (thí nghiệm D) vẫn không tách được bệnh nhân với người khỏe trên cầu thang (AUC 0,49).
 - SAM 3.1 nhận đúng cầu thang ở 3 góc và không nhận nhầm ở ảnh không có cầu thang. Muse Spark gọi tool đúng schema.
 

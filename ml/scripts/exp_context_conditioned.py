@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+from scipy.stats import rankdata
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -25,10 +26,8 @@ from ml.training import preprocess_vestibular as vest_pp  # noqa: E402
 
 
 def auc(scores, labels):
-    """Probability a random patient window outscores a random healthy one (Mann-Whitney)."""
-    order = scores.argsort()
-    ranks = np.empty(len(scores))
-    ranks[order] = np.arange(1, len(scores) + 1)
+    """Probability a random patient window outscores a random healthy one; ties count half (Mann-Whitney)."""
+    ranks = rankdata(scores, method="average")
     pos = labels == 1
     n_pos, n_neg = pos.sum(), (~pos).sum()
     if n_pos == 0 or n_neg == 0:

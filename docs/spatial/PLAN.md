@@ -12,7 +12,7 @@ Ngày 2 đã xong ngày 2026-10-29. Kết quả đo:
 
 - Suy luận qua `tf.function`: 1,87 ms mỗi cửa sổ, output trùng với cách gọi cũ tới 5 chữ số thập phân.
 - `ml/scripts/build_scenarios.py` tạo S1 và S2 từ bản ghi thật trong `assets/scenarios/`. Hai ứng viên S1 có người khỏe leo cầu thang đều bị luật SVM ≥ 2,5 g báo ngã, nên S1 chỉ gồm đi bộ. Kết quả mọi ứng viên nằm trong `detector_check.json`.
-- Chạy qua API trên instance cô lập: S2 tạo đúng một FALL incident bắt đầu ở 14.720 ms, nguồn quyết định là model, contact 1 nhận một thông báo mô phỏng. S1 không tạo incident. Start lần hai khi S2 đang chạy trả 409.
+- Chạy qua API trên instance cô lập: S2 tạo đúng một FALL incident bắt đầu ở 14.720 ms, nguồn quyết định là `keras`, contact 1 nhận một thông báo mô phỏng. S1 không tạo incident. Start lần hai khi S2 đang chạy trả 409.
 - Bộ test: 120 passed, gồm 8 test mới trong `backend/tests/test_spatial_runs.py`.
 - Còn lại: route `/api/sensor/*` cũ vẫn dùng cooldown và vẫn tạo alert INSTABILITY cho dashboard cũ. Phân tích bằng agent làm ở Ngày 6, escalation và ack ở Ngày 7.
 

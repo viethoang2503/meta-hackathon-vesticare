@@ -4,8 +4,8 @@ Ghi lại kết quả G1, G2, G3 theo [PLAN.md](PLAN.md). Mỗi dòng là kết 
 
 | Gate | Trạng thái | Ngày |
 |---|---|---|
-| G1. Model và ý nghĩa nhãn | Load và tốc độ đạt. Lớp INSTABILITY không đạt: không phân biệt được bất ổn với đi lại bình thường | 2026-10-29 |
-| G2. SAM trên ảnh demo | Đạt trên ảnh nhà khối hộp; còn chạy lại ở Ngày 5 | 2026-10-28 |
+| G1. Model và ý nghĩa nhãn | Load và tốc độ đạt. Nhánh FALL bắt 300/300 file ngã ở mức incident nhưng báo nhầm 78,5% file hoạt động thường ngày (SA). Lớp INSTABILITY không đạt. Chưa xác minh được tập train của weights | 2026-10-29 |
+| G2. SAM trên ảnh demo | Đạt trên ảnh nhà khối hộp: box và mask (đã giải mã) khớp cầu thang, không nhận nhầm. Chạy lại trên ảnh có nội thất ở Ngày 5 | 2026-10-29 |
 | G3. Tool calling | Đạt phần 1 (một lượt gọi tool) | 2026-10-28 |
 
 ## G1. Model và ý nghĩa nhãn
@@ -18,7 +18,9 @@ Môi trường: `.verify/venv`, Python 3.12, TensorFlow 2.21.0 (bản `macosx_12
 - Tốc độ: gọi model trực tiếp như `predict_fall_probability` đang làm mất 111,98 ms mỗi cửa sổ, đo trên 200 lần. Ngân sách ở 50 Hz, chạy model mỗi mẫu, là 20 ms. Bọc model bằng `tf.function` với input signature cố định còn 1,48 ms mỗi cửa sổ. Cần sửa ở Ngày 2.
 - Thử cửa sổ đứng yên tổng hợp (không nhiễu, SVM = 1): trọng lực trên +z cho FALL = 0,34, trên -y cho 0,29, trên +y cho 0,70. Cửa sổ không nhiễu khác xa dữ liệu thật, nên đây chỉ là dấu hiệu model nhạy với hướng trục. Chưa đủ để kết luận.
 
-### Ý nghĩa nhãn trên subject held-out
+### Ý nghĩa nhãn trên subject của tập TEST (split v2)
+
+Nguồn gốc dữ liệu train của weights chưa xác minh được. Script tạo lại split của `build_subject_independent_dataset.py` (seed 42) và lấy tập TEST. Không có manifest chứng minh weights đang dùng được train theo split này. Nhiều subject trong tập này lại thuộc tập train của split cũ (`preprocess_vestibular.py` và `preprocess.py`): `44_HS`, `02_BV`, `03_BV`, `09_BV`, `14_BV`, `34_UV`, `SA02`, `SA03`, `SA09`, `SA14`, `SE11`. Vì vậy trạng thái đúng là: chưa biết có chồng lấn với dữ liệu train hay không. Các con số dưới đây là của subject tập TEST v2, không phải dữ liệu đã chứng minh model chưa từng thấy.
 
 Chạy `PYTHONPATH=.. python ../ml/scripts/gate_g1_labels.py` từ `backend/`. Script dựng cửa sổ giống `build_subject_independent_dataset.py` (cửa sổ 100 mẫu, bước 50), chỉ lấy subject thuộc tập TEST của split seed 42, và gán trạng thái bằng chính `classify_state` của backend (luật SVM ≥ 2,5 g trước, rồi ngưỡng ML). Cột cuối là argmax của model, không qua luật SVM.
 
@@ -40,8 +42,23 @@ Kết luận:
 
 - Lớp INSTABILITY bật cho gần như mọi bản ghi từ bộ vestibular, kể cả người khỏe đi bộ (71%) và người khỏe đi cầu thang (100% theo model). Nó gần như không bật trên SisFall (dưới 1%). Lớp này đang tách nguồn dữ liệu (cảm biến thân của bộ vestibular so với SisFall), không tách bất ổn với chuyển động bình thường. Đây đúng là rủi ro mà Cell 11 của notebook train (domain-origin confound check) cảnh báo. Notebook không lưu output của cell đó.
 - Người khỏe đi cầu thang: cả 2 file đều có cửa sổ FALL theo luật backend. Model không dự đoán FALL (0%), nên FALL đến từ luật SVM ≥ 2,5 g.
-- Ngã SisFall: 300/300 file có ít nhất một cửa sổ FALL. Nhánh FALL hoạt động.
-- Báo nhầm FALL trên hoạt động thường ngày SisFall: 258/316 file SA và 52/118 file SE có ít nhất một cửa sổ FALL. Phần lớn đến từ luật SVM. Đo theo cửa sổ bước 50, chưa qua cơ chế xác nhận 0,5 giây và cooldown của backend.
+- Ngã SisFall: 300/300 file có ít nhất một cửa sổ FALL thô. Đây là mức cửa sổ; kết quả theo incident ở mục dưới.
+- Báo nhầm FALL trên hoạt động thường ngày SisFall ở mức cửa sổ: 258/316 file SA và 52/118 file SE có ít nhất một cửa sổ FALL. Đo theo cửa sổ bước 50, chưa qua xác nhận 0,5 giây.
+
+### Kết quả theo incident
+
+Chạy `PYTHONPATH=. python ml/scripts/gate_g1_incidents.py`. Mỗi bản ghi được phát lại từng mẫu qua `StreamMonitor`, đúng đường chạy của backend: xác nhận 0,5 giây rồi gom incident theo 10 giây. Cùng các subject tập TEST v2 ở trên.
+
+| Bản ghi | File | Có ít nhất 1 incident | Nguồn các incident |
+|---|---|---|---|
+| SisFall SA, ngã (F*) | 300 | 300 (100%) | keras 222, svm_rule 78 |
+| SisFall SA, hoạt động thường ngày (D*) | 316 | 248 (78,5%) | keras 164, svm_rule 89 |
+| SisFall SE, hoạt động thường ngày (D*) | 118 | 49 (41,5%) | keras 29, svm_rule 26 |
+| Vestibular HS, Stairs | 2 | 2 | svm_rule 2 |
+| Vestibular HS, Walk | 2 | 0 | |
+| Vestibular BV/UV, Walk | 7 | 0 | |
+
+Ở mức incident, nhánh FALL bắt mọi file ngã, nhưng báo nhầm trên phần lớn file hoạt động thường ngày của người trẻ. Phần lớn báo nhầm đến từ model, không phải luật SVM. Hoạt động thường ngày của SisFall gồm cả chạy bộ, nhảy và ngồi xuống nhanh; chưa tách theo mã hoạt động. Tỉ lệ này phải được công bố theo AC12 và là việc cần làm tiếp sau MVP 1.
 
 Lưu ý pipeline: trong `build_subject_independent_dataset.py`, nhãn SisFall giữ nguyên từ `preprocess.get_label_from_filename`, nơi `F* = 1`. Trong không gian 3 lớp, 1 là INSTABILITY. Model hiện tại dự đoán FALL cho 80% cửa sổ ngã SisFall, nên weights đang dùng có lẽ không được train từ pipeline này (suy luận, chưa có manifest). Nếu train lại bằng script này phải sửa ánh xạ nhãn trước.
 
@@ -58,7 +75,9 @@ Chạy `backend/tools/gate_sam.py --prompt stairs` trên bốn ảnh render từ
 
 Định dạng response: mỗi vật thể là một dòng `<0f>0<|box;x1=..;y1=..;x2=..;y2=..;w=..;h=..|><|mask;x=0;y=0;data=W,H,~...|>` trong phần `output_text`. Không tìm thấy thì `output_text` là chuỗi rỗng. `usage.images_processed` bằng 1 cho mỗi request.
 
-Chưa kiểm tra: giải mã mask thành ảnh nhị phân (cần `@meta-sam/parser` hoặc tự viết bộ giải mã cho payload `~`), độ bám của mask so với mép cầu thang, và ảnh render sau khi có nội thất đầy đủ. Ba việc này làm ở Ngày 5 (AC04).
+Mask đã giải mã bằng `@meta-sam/parser` 0.1.0 (`backend/tools/sam_masks/`). Cả ba ảnh cầu thang trả đúng 1 mask, không có diagnostic; ảnh phòng khách trả 0 mask. Kích thước raster khớp box. Tỉ lệ pixel thuộc mask trong box: 74% (nhìn từ dưới), 25% (nhìn ngang, box gần bằng cả khung), 71% (nhìn từ trên). Ảnh chồng mask lên frame nằm trong `docs/spatial/evidence/g2/*.mask.png`. Kiểm tra bằng mắt: mask bám theo các bậc; ảnh nhìn ngang có gồm chiếu nghỉ; ảnh nhìn từ dưới có mép lởm chởm ở bậc trên cùng.
+
+Chưa kiểm tra: IoU với mask đúng render từ scene, và ảnh sau khi có nội thất đầy đủ. Làm ở Ngày 5 (AC04).
 
 ## G3. Tool calling
 
@@ -111,6 +130,6 @@ Chạy `PYTHONPATH=. python ml/scripts/exp_context_conditioned.py`. Model nhận
 | Darkness walk | 0,66 | 56,1% | 86,2% | 63,7% |
 | Sorting | 0,50 | 51,5% | 55,7% | 50,8% |
 
-AUC chung theo cửa sổ là 0,59. AUC theo người (trung bình điểm mọi cửa sổ của một người, n=59) là 0,73.
+AUC chung theo cửa sổ là 0,59. AUC theo người (trung bình điểm mọi cửa sổ của một người, n=59) là 0,73. Hàm AUC ban đầu xử lý sai điểm bằng nhau; sau khi đổi sang hạng trung bình (`scipy.stats.rankdata`) và chạy lại, mọi số liệu trong bảng không đổi.
 
 Kết luận: biết hoạt động không giúp IMU tách bệnh nhân với người khỏe trên cầu thang (AUC 0,49). Các hoạt động đi bộ có tín hiệu vừa phải (0,66 đến 0,68), chưa đủ để cảnh báo theo từng cửa sổ 2 giây. Gộp theo người cho tín hiệu rõ hơn (0,73), phù hợp với điểm sàng lọc dáng đi qua nhiều phiên, không phù hợp cảnh báo tức thời. Bộ dữ liệu không có sự kiện suýt ngã, nên không mô hình nào ở đây học được "sắp ngã".

@@ -10,6 +10,6 @@ The camera and the IMU each do the job the evidence supports. The IMU detects fa
 
 For every fall, a Muse Spark agent uses tools to retrieve the sensor interval and the matching frame, segment hazards, and recommend environmental changes from a curated library. Caregivers select the incident in the 3D home to inspect the IMU trace, source image, segmentation mask, explanation, and response log.
 
-We also tested whether the IMU could warn before a fall. On held-out participants, the instability classifier flagged healthy people walking on stairs as often as patients, even when it knew the activity. We document these results and do not claim to detect loss of balance. Prevention in this version comes from context, and a weekly gait-screening score is future work.
+We also tested whether the IMU could warn before a fall. On participants from our test split, the instability classifier flagged healthy people walking on stairs as often as patients. A model we retrained with participant-level cross-validation, given the activity as input, still could not tell patients from healthy people on stairs (AUC 0.49). We document these results and do not claim to detect loss of balance. Prevention in this version comes from context, and a weekly gait-screening score is future work.
 
 MVP 1 runs on the web without glasses or live sensor hardware. The home is illustrative, and pairing sensor data with scene frames is a reproducible scenario rather than proof of real-world localization or synchronized capture of a person.
