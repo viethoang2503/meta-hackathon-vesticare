@@ -1,0 +1,136 @@
+{
+  "scenario": "S1",
+  "expect_incidents": 0,
+  "model_source": "keras",
+  "chosen_candidate": 2,
+  "candidates": [
+    {
+      "candidate": 0,
+      "segments": [
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 0,
+          "source_end_ms": 13420
+        },
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Stairs",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 13420,
+          "source_end_ms": 25800
+        },
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_44_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 25800,
+          "source_end_ms": 36740
+        }
+      ],
+      "incidents": [
+        {
+          "index": 0,
+          "source_start_ms": 24740,
+          "source_end_ms": 26260,
+          "decision_source": "svm_rule",
+          "max_fall_probability": 0.004162321332842112,
+          "peak_svm": 2.605177640914917
+        }
+      ],
+      "state_counts": {
+        "BUFFERING": 99,
+        "NORMAL": 326,
+        "VESTIBULAR_INSTABILITY": 1335,
+        "FALL": 77
+      },
+      "passes": false
+    },
+    {
+      "candidate": 1,
+      "segments": [
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_44_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 0,
+          "source_end_ms": 10940
+        },
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_44_HS",
+          "activity": "Stairs",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 10940,
+          "source_end_ms": 20520
+        },
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 20520,
+          "source_end_ms": 33940
+        }
+      ],
+      "incidents": [
+        {
+          "index": 0,
+          "source_start_ms": 18700,
+          "source_end_ms": 22500,
+          "decision_source": "svm_rule",
+          "max_fall_probability": 0.666628360748291,
+          "peak_svm": 3.9863598346710205
+        }
+      ],
+      "state_counts": {
+        "BUFFERING": 99,
+        "VESTIBULAR_INSTABILITY": 1149,
+        "NORMAL": 333,
+        "FALL": 116
+      },
+      "passes": false
+    },
+    {
+      "candidate": 2,
+      "segments": [
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 0,
+          "source_end_ms": 13420
+        },
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_44_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 13420,
+          "source_end_ms": 24360
+        },
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 24360,
+          "source_end_ms": 37780
+        }
+      ],
+      "incidents": [],
+      "state_counts": {
+        "BUFFERING": 99,
+        "NORMAL": 275,
+        "VESTIBULAR_INSTABILITY": 1515
+      },
+      "passes": true
+    }
+  ]
+}

@@ -64,6 +64,11 @@ def _upgrade_db() -> None:
         "ALTER TABLE sensor_data ADD COLUMN firmware_version TEXT",
         "ALTER TABLE sensor_data ADD COLUMN ntp_synced INTEGER",
         "ALTER TABLE sensor_data ADD COLUMN source_type TEXT DEFAULT 'simulator'",
+        # Spatial replay incidents (docs/spatial)
+        "ALTER TABLE alert_events ADD COLUMN session_id TEXT",
+        "ALTER TABLE alert_events ADD COLUMN source_start_ms INTEGER",
+        "ALTER TABLE alert_events ADD COLUMN source_end_ms INTEGER",
+        "ALTER TABLE alert_events ADD COLUMN decision_source TEXT",
     ]
     with engine.connect() as conn:
         for sql in migrations:

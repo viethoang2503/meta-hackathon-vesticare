@@ -1,0 +1,28 @@
+{
+  "id": "S2",
+  "title": "Walk, then a forward fall near the stairs",
+  "notes": "SisFall F01: fall forward while walking, caused by a slip.",
+  "patient_id": 1,
+  "sample_rate_hz": 50,
+  "imu_file": "imu.csv",
+  "duration_ms": 28420,
+  "pairing": "Scenario-paired: real recordings from different people and sensors spliced on one timeline.",
+  "segments": [
+    {
+      "dataset": "vestibular",
+      "participant": "Participant_58_HS",
+      "activity": "Walk",
+      "sensor": "TR (trunk)",
+      "source_start_ms": 0,
+      "source_end_ms": 13420
+    },
+    {
+      "dataset": "SisFall",
+      "subject": "SA03",
+      "trial": "F01_SA03_R01",
+      "sensor": "waist",
+      "source_start_ms": 13420,
+      "source_end_ms": 28420
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "scenario": "S2",
+  "expect_incidents": 1,
+  "model_source": "keras",
+  "chosen_candidate": 0,
+  "candidates": [
+    {
+      "candidate": 0,
+      "segments": [
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 0,
+          "source_end_ms": 13420
+        },
+        {
+          "dataset": "SisFall",
+          "subject": "SA03",
+          "trial": "F01_SA03_R01",
+          "sensor": "waist",
+          "source_start_ms": 13420,
+          "source_end_ms": 28420
+        }
+      ],
+      "incidents": [
+        {
+          "index": 0,
+          "source_start_ms": 14720,
+          "source_end_ms": 28400,
+          "decision_source": "model",
+          "max_fall_probability": 0.9937523007392883,
+          "peak_svm": 5.178712368011475
+        }
+      ],
+      "state_counts": {
+        "BUFFERING": 99,
+        "NORMAL": 311,
+        "VESTIBULAR_INSTABILITY": 593,
+        "FALL": 418
+      },
+      "passes": true
+    },
+    {
+      "candidate": 1,
+      "segments": [
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_58_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 0,
+          "source_end_ms": 13420
+        },
+        {
+          "dataset": "SisFall",
+          "subject": "SA03",
+          "trial": "F01_SA03_R02",
+          "sensor": "waist",
+          "source_start_ms": 13420,
+          "source_end_ms": 28420
+        }
+      ],
+      "incidents": [
+        {
+          "index": 0,
+          "source_start_ms": 15160,
+          "source_end_ms": 28400,
+          "decision_source": "model",
+          "max_fall_probability": 0.9844068288803101,
+          "peak_svm": 4.602083206176758
+        }
+      ],
+      "state_counts": {
+        "BUFFERING": 99,
+        "NORMAL": 238,
+        "VESTIBULAR_INSTABILITY": 605,
+        "FALL": 479
+      },
+      "passes": true
+    },
+    {
+      "candidate": 2,
+      "segments": [
+        {
+          "dataset": "vestibular",
+          "participant": "Participant_44_HS",
+          "activity": "Walk",
+          "sensor": "TR (trunk)",
+          "source_start_ms": 0,
+          "source_end_ms": 10940
+        },
+        {
+          "dataset": "SisFall",
+          "subject": "SA02",
+          "trial": "F01_SA02_R01",
+          "sensor": "waist",
+          "source_start_ms": 10940,
+          "source_end_ms": 25940
+        }
+      ],
+      "incidents": [
+        {
+          "index": 0,
+          "source_start_ms": 20720,
+          "source_end_ms": 25920,
+          "decision_source": "model",
+          "max_fall_probability": 0.9793962240219116,
+          "peak_svm": 7.435026168823242
+        }
+      ],
+      "state_counts": {
+        "BUFFERING": 99,
+        "VESTIBULAR_INSTABILITY": 220,
+        "NORMAL": 802,
+        "FALL": 176
+      },
+      "passes": true
+    }
+  ]
+}

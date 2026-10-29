@@ -6,7 +6,7 @@ Moi lop (class) tuong ung voi 1 bang. Moi thuoc tinh (attribute) tuong ung voi 1
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -99,7 +99,42 @@ class AlertEvent(Base):
     notification_sent_at = Column(DateTime, nullable=True)
     notification_error = Column(String, nullable=True)
 
+    # Spatial replay incidents (docs/spatial). Null on legacy sensor-route alerts.
+    session_id = Column(String, ForeignKey("spatial_sessions.id"), nullable=True, index=True)
+    source_start_ms = Column(Integer, nullable=True)
+    source_end_ms = Column(Integer, nullable=True)
+    decision_source = Column(String, nullable=True)  # "model" | "svm_rule"
+
     patient = relationship("Patient", back_populates="alerts")
+
+
+class SpatialSession(Base):
+    """One Start of a replay scenario. Status: Running | Stopped | Interrupted."""
+    __tablename__ = "spatial_sessions"
+
+    id = Column(String, primary_key=True)
+    scenario_id = Column(String, nullable=False)
+    status = Column(String, nullable=False, index=True)
+    end_reason = Column(String, nullable=True)  # user_stop | timeout | session_interrupted
+    started_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+    source_offset_ms = Column(Integer, nullable=False, default=0)
+    recording_ended = Column(Boolean, nullable=False, default=False)
+    model_source = Column(String, nullable=False)
+
+
+class SpatialAction(Base):
+    """Append-only log of what the policy did: notifications, acks, self-reports, advisories."""
+    __tablename__ = "spatial_actions"
+    __table_args__ = (UniqueConstraint("incident_id", "kind", "target", name="uq_action_once"),)
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, ForeignKey("spatial_sessions.id"), nullable=False, index=True)
+    incident_id = Column(Integer, ForeignKey("alert_events.id"), nullable=True)
+    kind = Column(String, nullable=False)  # notify | escalate | ack | self_report | advisory
+    target = Column(String, nullable=True)  # contact_1 | contact_2 | zone id
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False)
 
 
 class DailyLog(Base):

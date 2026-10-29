@@ -1,0 +1,36 @@
+{
+  "id": "S1",
+  "title": "Evening walk toward the stairs, no fall",
+  "notes": "Walking only. Candidates that included healthy stair climbing tripped the SVM >= 2.5 g rule; see detector_check.json.",
+  "patient_id": 1,
+  "sample_rate_hz": 50,
+  "imu_file": "imu.csv",
+  "duration_ms": 37780,
+  "pairing": "Scenario-paired: real recordings from different people and sensors spliced on one timeline.",
+  "segments": [
+    {
+      "dataset": "vestibular",
+      "participant": "Participant_58_HS",
+      "activity": "Walk",
+      "sensor": "TR (trunk)",
+      "source_start_ms": 0,
+      "source_end_ms": 13420
+    },
+    {
+      "dataset": "vestibular",
+      "participant": "Participant_44_HS",
+      "activity": "Walk",
+      "sensor": "TR (trunk)",
+      "source_start_ms": 13420,
+      "source_end_ms": 24360
+    },
+    {
+      "dataset": "vestibular",
+      "participant": "Participant_58_HS",
+      "activity": "Walk",
+      "sensor": "TR (trunk)",
+      "source_start_ms": 24360,
+      "source_end_ms": 37780
+    }
+  ]
+}

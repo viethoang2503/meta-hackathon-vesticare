@@ -18,6 +18,7 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # VERTI-GO ALERT PROJECT/
 BACKEND_DIR = Path(__file__).resolve().parent.parent           # backend/
 ML_DIR = PROJECT_ROOT / "ml"
+SCENARIOS_DIR = PROJECT_ROOT / "assets" / "scenarios"
 
 # Database
 DATABASE_PATH = BACKEND_DIR / "database.db"
@@ -104,3 +105,11 @@ DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", "")
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 OPENWEATHER_CITY = os.getenv("OPENWEATHER_CITY", "Hanoi")
+
+
+# ===========================================================================
+# SPATIAL REPLAY (docs/spatial/SPEC.md, bang tham so)
+# ===========================================================================
+
+SPATIAL_RUN_TIMEOUT_SECONDS = 180
+SPATIAL_FALL_MERGE_SECONDS = 10
