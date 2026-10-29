@@ -65,6 +65,9 @@ class PredictionResult:
     model_source: str = "heuristic"
     inference_latency_ms: float | None = None
     active_threshold: float | None = None   # V.6: threshold thực tế được dùng
+    # Which branch of classify_state produced a FALL: "svm_rule", or the model
+    # source that scored the window ("keras" | "tflite" | "heuristic").
+    decision_source: str | None = None
 
 
 class FallDetectionService:
@@ -222,6 +225,7 @@ class FallDetectionService:
             model_source=self.model_source,
             inference_latency_ms=inference_latency_ms,
             active_threshold=active_threshold,
+            decision_source=self.fall_decision_source(peak_svm) if raw_state == "FALL" else None,
         )
 
     def classify_state(
@@ -241,6 +245,10 @@ class FallDetectionService:
         if instability_probability >= ML_INSTABILITY_CONFIDENCE_THRESHOLD:
             return "VESTIBULAR_INSTABILITY"
         return "NORMAL"
+
+    def fall_decision_source(self, peak_svm: float) -> str:
+        """Mirrors classify_state's order: the SVM rule is checked before any probability."""
+        return "svm_rule" if peak_svm >= SVM_FALL_THRESHOLD else self.model_source
 
     def predict_fall_probability(self, window: np.ndarray) -> tuple[float, float]:
         """Returns (fall_probability, instability_probability).

@@ -29,7 +29,7 @@
           "index": 0,
           "source_start_ms": 14720,
           "source_end_ms": 28400,
-          "decision_source": "model",
+          "decision_source": "keras",
           "max_fall_probability": 0.9937523007392883,
           "peak_svm": 5.178712368011475
         }
@@ -67,7 +67,7 @@
           "index": 0,
           "source_start_ms": 15160,
           "source_end_ms": 28400,
-          "decision_source": "model",
+          "decision_source": "keras",
           "max_fall_probability": 0.9844068288803101,
           "peak_svm": 4.602083206176758
         }
@@ -105,7 +105,7 @@
           "index": 0,
           "source_start_ms": 20720,
           "source_end_ms": 25920,
-          "decision_source": "model",
+          "decision_source": "svm_rule",
           "max_fall_probability": 0.9793962240219116,
           "peak_svm": 7.435026168823242
         }

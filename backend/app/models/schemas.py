@@ -103,7 +103,7 @@ class AlertEvent(Base):
     session_id = Column(String, ForeignKey("spatial_sessions.id"), nullable=True, index=True)
     source_start_ms = Column(Integer, nullable=True)
     source_end_ms = Column(Integer, nullable=True)
-    decision_source = Column(String, nullable=True)  # "model" | "svm_rule"
+    decision_source = Column(String, nullable=True)  # "svm_rule" | "keras" | "tflite" | "heuristic"
 
     patient = relationship("Patient", back_populates="alerts")
 

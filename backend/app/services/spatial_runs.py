@@ -6,8 +6,11 @@ timeout, and Interrupted after a restart. Persists the incidents StreamMonitor
 reports, then dispatches simulated notifications after the commit, so a slow
 notification can never delay detection.
 
-Session status lives in the database and is re-read before every write and
-dispatch: a Stop that lands while a chunk or a notification is in flight wins.
+Each run has one lock. Ending a run and every write the run makes (incident
+rows, progress, notifications) check status and commit under that lock, so a
+Stop can never land between a write's status check and its commit. Stop does
+not cancel the replay task: it waits for it, because a worker thread started
+with asyncio.to_thread keeps running after its coroutine is cancelled.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -103,6 +107,8 @@ class SpatialRunManager:
         self._session_factory = session_factory
         self._detector = detector
         self._runs: dict[str, asyncio.Task] = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._stop_requested: dict[str, asyncio.Event] = {}
         self._dispatches: set[asyncio.Task] = set()
 
     def _db(self):
@@ -135,15 +141,23 @@ class SpatialRunManager:
                 model_source=self._detector.model_source,
             ))
             db.commit()
+        self._locks[session_id] = threading.Lock()
+        self._stop_requested[session_id] = asyncio.Event()
         self._runs[session_id] = asyncio.create_task(self._replay(session_id, scenario))
         _hint(session_id, "started")
         return session_id
 
     async def stop(self, session_id: str) -> None:
-        self._end(session_id, "Stopped", "user_stop")
-        task = self._runs.pop(session_id, None)
+        """Returns once the run is Stopped and its replay task, worker thread included, has exited."""
+        lock = self._locks.get(session_id)
+        if lock is None:
+            self._end(session_id, "Stopped", "user_stop")
+            return
+        await asyncio.to_thread(self._end_under, lock, session_id, "Stopped", "user_stop")
+        self._stop_requested[session_id].set()
+        task = self._runs.get(session_id)
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def wait(self, session_id: str) -> None:
         """Wait for a run's replay task to finish (used by tests and shutdown)."""
@@ -152,6 +166,10 @@ class SpatialRunManager:
             await asyncio.gather(task, return_exceptions=True)
         if self._dispatches:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
+
+    def _end_under(self, lock: threading.Lock, session_id: str, status: str, reason: str) -> bool:
+        with lock:
+            return self._end(session_id, status, reason)
 
     def _end(self, session_id: str, status: str, reason: str) -> bool:
         with self._db() as db:
@@ -164,6 +182,7 @@ class SpatialRunManager:
         return True
 
     async def _replay(self, session_id: str, scenario: Scenario) -> None:
+        lock, stop_requested = self._locks[session_id], self._stop_requested[session_id]
         monitor = StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector)
         incident_rows: dict[int, int] = {}
         loop = asyncio.get_running_loop()
@@ -173,35 +192,39 @@ class SpatialRunManager:
             while True:
                 elapsed = loop.time() - started
                 if elapsed >= self._run_timeout:
-                    self._end(session_id, "Stopped", "timeout")
+                    await asyncio.to_thread(self._end_under, lock, session_id, "Stopped", "timeout")
                     return
                 due = min(total, int(elapsed * scenario.sample_rate_hz) + 1) if self._realtime else total
                 if due > cursor:
                     opened = await asyncio.to_thread(
-                        self._ingest, session_id, scenario, monitor, incident_rows, cursor, due
+                        self._ingest, lock, session_id, scenario, monitor, incident_rows, cursor, due
                     )
                     if opened is None:
                         return
                     cursor = due
                     for incident_id in opened:
-                        self._dispatch(session_id, incident_id, "contact_1")
-                await asyncio.sleep(TICK_SECONDS if self._realtime else 0.01)
-        except asyncio.CancelledError:
-            raise
+                        self._dispatch(session_id, lock, incident_id, "contact_1")
+                try:
+                    await asyncio.wait_for(stop_requested.wait(), TICK_SECONDS if self._realtime else 0.01)
+                    return
+                except asyncio.TimeoutError:
+                    pass
         except Exception:
             logger.exception("spatial replay %s failed", session_id)
             try:
-                self._end(session_id, "Interrupted", "replay_error")
+                self._end_under(lock, session_id, "Interrupted", "replay_error")
             except Exception:
                 logger.exception("could not record Interrupted for %s", session_id)
         finally:
             monitor.close()
             self._runs.pop(session_id, None)
+            self._locks.pop(session_id, None)
+            self._stop_requested.pop(session_id, None)
 
-    def _ingest(self, session_id, scenario, monitor, incident_rows, start, end) -> list[int] | None:
+    def _ingest(self, lock, session_id, scenario, monitor, incident_rows, start, end) -> list[int] | None:
         """Runs in a worker thread. Returns new incident ids, or None once the run has ended."""
         events = [monitor.add_sample(int(scenario.source_ms[j]), scenario.samples[j]) for j in range(start, end)]
-        with self._db() as db:
+        with lock, self._db() as db:
             session = db.get(SpatialSession, session_id)
             if session is None or session.status != "Running":
                 return None
@@ -239,14 +262,14 @@ class SpatialRunManager:
         _hint(session_id, "incident" if opened else "progress")
         return opened
 
-    def _dispatch(self, session_id: str, incident_id: int, target: str) -> None:
-        task = asyncio.create_task(self._notify(session_id, incident_id, target))
+    def _dispatch(self, session_id: str, lock: threading.Lock, incident_id: int, target: str) -> None:
+        task = asyncio.create_task(asyncio.to_thread(self._notify, lock, session_id, incident_id, target))
         self._dispatches.add(task)
         task.add_done_callback(self._dispatches.discard)
 
-    async def _notify(self, session_id: str, incident_id: int, target: str) -> None:
+    def _notify(self, lock: threading.Lock, session_id: str, incident_id: int, target: str) -> None:
         """Simulated sink: the notification is the action-log row. Nothing leaves the process."""
-        with self._db() as db:
+        with lock, self._db() as db:
             session = db.get(SpatialSession, session_id)
             if session is None or session.status != "Running":
                 return

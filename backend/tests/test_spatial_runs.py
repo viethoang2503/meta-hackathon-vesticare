@@ -8,8 +8,10 @@ seconds instead of the scenario's wall-clock length.
 import asyncio
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -17,13 +19,14 @@ if str(BACKEND_DIR) not in sys.path:
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session as OrmSession  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.database import Base  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import schemas  # noqa: E402,F401
 from app.models.schemas import SpatialSession  # noqa: E402
-from app.services.fall_detection import fall_detection_service  # noqa: E402
+from app.services.fall_detection import FallDetectionService, fall_detection_service  # noqa: E402
 from app.services.monitoring import StreamMonitor  # noqa: E402
 from app.services.spatial_runs import (  # noqa: E402
     RunAlreadyActive,
@@ -36,37 +39,56 @@ from app.services.spatial_runs import (  # noqa: E402
 S2_FALL_START_MS = 14720
 
 
+class PausedAfterStatusRead(OrmSession):
+    """Pauses the first worker-thread read of a session row until the test releases it."""
+
+    gate: dict | None = None
+
+    def get(self, entity, ident, **kw):
+        row = super().get(entity, ident, **kw)
+        gate = PausedAfterStatusRead.gate
+        if gate and entity is SpatialSession and threading.current_thread() is not threading.main_thread() \
+                and not gate["reached"].is_set():
+            gate["reached"].set()
+            gate["release"].wait(30)
+        return row
+
+
 class SpatialRunsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        engine = create_engine(f"sqlite:///{self.tmp.name}/spatial.db", connect_args={"check_same_thread": False})
-        Base.metadata.create_all(engine)
-        self.db = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+        self.engine = create_engine(f"sqlite:///{self.tmp.name}/spatial.db", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(self.engine)
+        self.db = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
 
     def tearDown(self):
+        PausedAfterStatusRead.gate = None
         self.tmp.cleanup()
 
     def manager(self, **kwargs):
         return SpatialRunManager(session_factory=self.db, **{"realtime": False, "run_timeout_seconds": 0.5, **kwargs})
 
     def run_to_end(self, scenario_id):
+        """Replay the whole recording, let in-flight notifications land, then Stop."""
         async def go():
-            m = self.manager()
+            m = self.manager(run_timeout_seconds=60)
             sid = await m.start(scenario_id)
-            await m.wait(sid)
+            while not session_snapshot(sid, self.db)["recording_ended"]:
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.5)
+            await m.stop(sid)
             return sid
         return session_snapshot(asyncio.run(go()), self.db)
 
     def test_s2_opens_one_fall_incident_and_notifies_contact_1_once(self):
         snap = self.run_to_end("S2")
-        self.assertEqual(snap["status"], "Stopped")
-        self.assertEqual(snap["end_reason"], "timeout")
+        self.assertEqual((snap["status"], snap["end_reason"]), ("Stopped", "user_stop"))
         self.assertTrue(snap["recording_ended"])
         self.assertEqual(len(snap["incidents"]), 1)
         incident = snap["incidents"][0]
         self.assertEqual(incident["alert_type"], "FALL")
         self.assertEqual(incident["source_start_ms"], S2_FALL_START_MS)
-        self.assertEqual(incident["decision_source"], "model")
+        self.assertEqual(incident["decision_source"], "keras")
         self.assertEqual(incident["notification_status"], "simulated")
         self.assertEqual(
             [(a["kind"], a["target"], a["incident_id"]) for a in snap["actions"]],
@@ -77,6 +99,15 @@ class SpatialRunsTest(unittest.TestCase):
         snap = self.run_to_end("S1")
         self.assertEqual(snap["incidents"], [])
         self.assertEqual(snap["actions"], [])
+
+    def test_run_timeout_stops_the_run(self):
+        async def go():
+            m = self.manager(run_timeout_seconds=0.5)
+            sid = await m.start("S1")
+            await m.wait(sid)
+            return sid
+        snap = session_snapshot(asyncio.run(go()), self.db)
+        self.assertEqual((snap["status"], snap["end_reason"]), ("Stopped", "timeout"))
 
     def test_two_runs_keep_separate_detector_state(self):
         first = self.run_to_end("S2")
@@ -116,6 +147,43 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertLess(snap["source_offset_ms"], S2_FALL_START_MS)
         self.assertEqual(snap["incidents"], [])
 
+    def test_nothing_changes_after_stop_returns_even_with_a_write_in_flight(self):
+        gate = {"reached": threading.Event(), "release": threading.Event()}
+        PausedAfterStatusRead.gate = gate
+        db = sessionmaker(bind=self.engine, class_=PausedAfterStatusRead, autocommit=False, autoflush=False)
+
+        async def go():
+            m = SpatialRunManager(session_factory=db, realtime=False, run_timeout_seconds=60)
+            sid = await m.start("S2")
+            self.assertTrue(await asyncio.to_thread(gate["reached"].wait, 60), "ingest never read the session")
+            stopping = asyncio.create_task(m.stop(sid))
+            await asyncio.sleep(0.5)
+            gate["release"].set()
+            await stopping
+            at_return = session_snapshot(sid, self.db)
+            await asyncio.sleep(2)
+            return at_return, session_snapshot(sid, self.db)
+
+        at_return, later = asyncio.run(go())
+        self.assertEqual((at_return["status"], at_return["end_reason"]), ("Stopped", "user_stop"))
+        self.assertEqual(later, at_return)
+
+    def test_stop_while_the_detector_is_still_working_leaves_no_trace(self):
+        async def go():
+            m = self.manager(run_timeout_seconds=60)
+            sid = await m.start("S2")
+            await asyncio.sleep(0.3)
+            await m.stop(sid)
+            after_stop = session_snapshot(sid, self.db)
+            await asyncio.sleep(5)
+            return after_stop, session_snapshot(sid, self.db)
+        after_stop, later = asyncio.run(go())
+        for snap in (after_stop, later):
+            self.assertEqual((snap["status"], snap["end_reason"]), ("Stopped", "user_stop"))
+            self.assertEqual(snap["incidents"], [])
+            self.assertEqual(snap["actions"], [])
+            self.assertEqual(snap["source_offset_ms"], 0)
+
     def test_restart_marks_a_running_session_interrupted(self):
         with self.db() as db:
             db.add(SpatialSession(id="orphan", scenario_id="S2", status="Running", started_at=_utcnow(),
@@ -142,6 +210,19 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertEqual(ms, S2_FALL_START_MS)
         self.assertTrue(suppressed, "legacy cooldown, consumed by earlier INSTABILITY windows, hides this fall")
         self.assertEqual(event.kind, "opened")
+
+
+class DecisionSourceTest(unittest.TestCase):
+    def test_incident_names_the_heuristic_when_the_model_file_is_missing(self):
+        with patch("app.services.fall_detection.KERAS_MODEL_PATH", Path("/nonexistent.keras")):
+            detector = FallDetectionService()
+        self.assertEqual(detector.model_source, "heuristic")
+        monitor = StreamMonitor("test:heuristic", detector)
+        scenario = load_scenario("S2")
+        for ms, sample in zip(scenario.source_ms, scenario.samples):
+            monitor.add_sample(int(ms), sample)
+        monitor.close()
+        self.assertEqual([(i.source_start_ms, i.decision_source) for i in monitor.incidents], [(3440, "heuristic")])
 
 
 class SpatialApiTest(unittest.TestCase):

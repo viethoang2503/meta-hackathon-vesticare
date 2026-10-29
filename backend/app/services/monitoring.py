@@ -19,20 +19,17 @@ from typing import Hashable, Literal
 
 import numpy as np
 
-from app.config import ML_CONFIDENCE_THRESHOLD, SPATIAL_FALL_MERGE_SECONDS
+from app.config import SPATIAL_FALL_MERGE_SECONDS
 from app.services.fall_detection import FallDetectionService
 
 FALL_MERGE_MS = SPATIAL_FALL_MERGE_SECONDS * 1000
-
-DecisionSource = Literal["model", "svm_rule"]
-
 
 @dataclass
 class Incident:
     index: int
     source_start_ms: int
     source_end_ms: int
-    decision_source: DecisionSource
+    decision_source: str  # FallDetectionService.fall_decision_source of the opening window
     max_fall_probability: float
     peak_svm: float
 
@@ -72,7 +69,7 @@ class StreamMonitor:
             index=len(self.incidents),
             source_start_ms=source_ms,
             source_end_ms=source_ms,
-            decision_source="model" if fall_p >= ML_CONFIDENCE_THRESHOLD else "svm_rule",
+            decision_source=prediction.decision_source,
             max_fall_probability=fall_p,
             peak_svm=peak,
         )
