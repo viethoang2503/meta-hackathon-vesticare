@@ -6,6 +6,11 @@ timeout, and Interrupted after a restart. Persists the incidents StreamMonitor
 reports, then dispatches simulated notifications after the commit, so a slow
 notification can never delay detection.
 
+A fall incident starts as awaiting_wearer: the HUD asks "Are you OK?" for
+WEARER_CANCEL_WINDOW_SECONDS. "I'm OK" in time makes it cancelled_by_wearer and
+nobody is notified; silence makes it alerted and contact_1 is notified. "I'm OK"
+after that is recorded but does not cancel anything.
+
 Each run has one lock. Ending a run and every write the run makes (incident
 rows, progress, notifications) check status and commit under that lock, so a
 Stop can never land between a write's status check and its commit. Stop does
@@ -27,7 +32,7 @@ from datetime import datetime, timezone
 import numpy as np
 from sqlalchemy.exc import IntegrityError
 
-from app.config import SCENARIOS_DIR, SPATIAL_RUN_TIMEOUT_SECONDS
+from app.config import SCENARIOS_DIR, SPATIAL_RUN_TIMEOUT_SECONDS, WEARER_CANCEL_WINDOW_SECONDS
 from app import database
 from app.models.schemas import AlertEvent, SpatialAction, SpatialSession
 from app.services.broadcaster import broadcaster
@@ -99,11 +104,13 @@ class SpatialRunManager:
         *,
         realtime: bool = True,
         run_timeout_seconds: float = SPATIAL_RUN_TIMEOUT_SECONDS,
+        wearer_cancel_seconds: float = WEARER_CANCEL_WINDOW_SECONDS,
         session_factory=None,
         detector: FallDetectionService = fall_detection_service,
     ) -> None:
         self._realtime = realtime
         self._run_timeout = run_timeout_seconds
+        self._wearer_cancel = wearer_cancel_seconds
         self._session_factory = session_factory
         self._detector = detector
         self._runs: dict[str, asyncio.Task] = {}
@@ -203,7 +210,7 @@ class SpatialRunManager:
                         return
                     cursor = due
                     for incident_id in opened:
-                        self._dispatch(session_id, lock, incident_id, "contact_1")
+                        self._background(self._wearer_countdown(session_id, lock, incident_id))
                 try:
                     await asyncio.wait_for(stop_requested.wait(), TICK_SECONDS if self._realtime else 0.01)
                     return
@@ -242,6 +249,7 @@ class SpatialRunManager:
                         peak_svm=inc.peak_svm,
                         is_acknowledged=False,
                         notification_status="pending",
+                        spatial_state="awaiting_wearer",
                         session_id=session_id,
                         source_start_ms=inc.source_start_ms,
                         source_end_ms=inc.source_end_ms,
@@ -262,34 +270,73 @@ class SpatialRunManager:
         _hint(session_id, "incident" if opened else "progress")
         return opened
 
-    def _dispatch(self, session_id: str, lock: threading.Lock, incident_id: int, target: str) -> None:
-        task = asyncio.create_task(asyncio.to_thread(self._notify, lock, session_id, incident_id, target))
+    def _background(self, coro) -> None:
+        task = asyncio.create_task(coro)
         self._dispatches.add(task)
         task.add_done_callback(self._dispatches.discard)
 
-    def _notify(self, lock: threading.Lock, session_id: str, incident_id: int, target: str) -> None:
+    async def _wearer_countdown(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
+        await asyncio.sleep(self._wearer_cancel)
+        await asyncio.to_thread(self._alert_if_unanswered, lock, session_id, incident_id)
+
+    def _alert_if_unanswered(self, lock: threading.Lock, session_id: str, incident_id: int) -> None:
         """Simulated sink: the notification is the action-log row. Nothing leaves the process."""
         with lock, self._db() as db:
             session = db.get(SpatialSession, session_id)
-            if session is None or session.status != "Running":
+            row = db.get(AlertEvent, incident_id)
+            if session is None or session.status != "Running" or row.spatial_state != "awaiting_wearer":
                 return
+            row.spatial_state = "alerted"
+            row.notification_status = "simulated"
+            row.notification_sent_at = _utcnow()
             db.add(SpatialAction(
                 session_id=session_id,
                 incident_id=incident_id,
                 kind="notify",
-                target=target,
-                detail=json.dumps({"channel": "simulated"}),
+                target="contact_1",
+                detail=json.dumps({"channel": "simulated", "after_wearer_window_s": self._wearer_cancel}),
                 created_at=_utcnow(),
             ))
+            db.commit()
+        _hint(session_id, "action")
+
+    async def wearer_ok(self, incident_id: int) -> dict | None:
+        """The wearer pressed "I'm OK". Returns None for an unknown incident."""
+        with self._db() as db:
             row = db.get(AlertEvent, incident_id)
-            row.notification_status = "simulated"
-            row.notification_sent_at = _utcnow()
+            if row is None or row.session_id is None:
+                return None
+            session_id = row.session_id
+        lock = self._locks.get(session_id)
+        if lock is None:
+            return {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state, "reason": "run_ended"}
+        return await asyncio.to_thread(self._record_wearer_ok, lock, session_id, incident_id)
+
+    def _record_wearer_ok(self, lock: threading.Lock, session_id: str, incident_id: int) -> dict:
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            row = db.get(AlertEvent, incident_id)
+            if session is None or session.status != "Running":
+                return {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state, "reason": "run_ended"}
+            cancels = row.spatial_state == "awaiting_wearer"
+            if cancels:
+                row.spatial_state = "cancelled_by_wearer"
+            db.add(SpatialAction(
+                session_id=session_id,
+                incident_id=incident_id,
+                kind="self_report",
+                target="wearer",
+                detail=json.dumps({"response": "ok", "cancelled_alert": cancels}),
+                created_at=_utcnow(),
+            ))
             try:
                 db.commit()
             except IntegrityError:
                 db.rollback()
-                return
+                return {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state, "reason": "already_recorded"}
+            state = row.spatial_state
         _hint(session_id, "action")
+        return {"incident_id": incident_id, "applied": True, "incident_state": state, "reason": None}
 
 
 def session_snapshot(session_id: str, session_factory=None) -> dict | None:
@@ -330,6 +377,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                     "peak_svm": i.peak_svm,
                     "is_acknowledged": i.is_acknowledged,
                     "notification_status": i.notification_status,
+                    "state": i.spatial_state,
                 }
                 for i in incidents
             ],

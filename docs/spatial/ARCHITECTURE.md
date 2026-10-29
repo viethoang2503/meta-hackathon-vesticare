@@ -109,7 +109,7 @@ Monitoring áp dụng transition ngắn có lưu DB trước khi schedule side e
 
 Một action gửi được nhận diện bằng incident và contact trong action log. Có thể dùng unique constraint nhỏ cho tổ hợp này để tránh timer/callback tạo hai thông báo mô phỏng. Đây không phải queue có idempotency protocol hoặc lease.
 
-Vào zone `fall_exposure` tạo advisory: HUD hiện ngay, rồi một task gọi SAM trên frame lúc vào zone và ghi kết quả. Advisory có cooldown theo zone và không lên lịch thông báo. FALL tạo Critical incident: contact 1 nhận simulated alert ngay và caregiver deadline bắt đầu từ thời điểm đó.
+Vào zone `fall_exposure` tạo advisory: HUD hiện ngay, rồi một task gọi SAM trên frame lúc vào zone và ghi kết quả. Advisory có cooldown theo zone và không lên lịch thông báo. FALL chỉ mở Critical incident khi `StreamMonitor` thấy người đeo nằm yên sau đó. Incident bắt đầu ở awaiting_wearer với đếm ngược `WEARER_CANCEL_WINDOW_SECONDS`. "I'm OK" trong lúc đếm chuyển sang cancelled_by_wearer; hết đếm ngược thì chuyển alerted, contact 1 nhận simulated alert và caregiver deadline bắt đầu. Cả hai chuyển trạng thái chạy dưới khóa của run.
 
 Caregiver ack chặn contact 2. Wearer self-report sau FALL chỉ là thông tin hiển thị cho người chăm sóc. Ack lặp lại trả cùng kết quả.
 

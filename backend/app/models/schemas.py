@@ -104,6 +104,7 @@ class AlertEvent(Base):
     source_start_ms = Column(Integer, nullable=True)
     source_end_ms = Column(Integer, nullable=True)
     decision_source = Column(String, nullable=True)  # "svm_rule" | "keras" | "tflite" | "heuristic"
+    spatial_state = Column(String, nullable=True)  # awaiting_wearer | cancelled_by_wearer | alerted
 
     patient = relationship("Patient", back_populates="alerts")
 

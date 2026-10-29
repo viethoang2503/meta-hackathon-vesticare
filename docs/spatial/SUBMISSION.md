@@ -6,7 +6,7 @@ Bản nháp v0.3, khớp phạm vi trong [SPEC.md](SPEC.md). Đây là mô tả 
 
 I want to build Vesti-Care Spatial, an explainable fall-safety assistant that combines a wearable IMU, Meta AI tools, and a furnished 3D home simulation.
 
-The camera and the IMU each do the job the evidence supports. The IMU detects falls. The camera, through SAM 3.1, shows what is around the person. When the wearer walks into a known hazard zone such as the stairs, a simulated glasses HUD shows a prevention tip, and SAM confirms the hazard in the current frame. When the IMU detects a fall, the caregiver is alerted immediately and the HUD asks the wearer "Are you OK?". An unacknowledged alert escalates to a second simulated contact. Code enforces this policy independently of model reasoning.
+The camera and the IMU each do the job the evidence supports. The IMU detects falls. The camera, through SAM 3.1, shows what is around the person. When the wearer walks into a known hazard zone such as the stairs, a simulated glasses HUD shows a prevention tip, and SAM confirms the hazard in the current frame. When the IMU detects a fall and the person then stays still, the HUD asks "Are you OK?" with a seven-second countdown. The wearer can cancel a false alarm; silence alerts a simulated caregiver, and an unacknowledged alert escalates to a second contact. Code enforces this policy independently of model reasoning.
 
 For every fall, a Muse Spark agent uses tools to retrieve the sensor interval and the matching frame, segment hazards, and recommend environmental changes from a curated library. Caregivers select the incident in the 3D home to inspect the IMU trace, source image, segmentation mask, explanation, and response log.
 

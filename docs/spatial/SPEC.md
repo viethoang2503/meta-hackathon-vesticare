@@ -1,6 +1,10 @@
 # Đặc tả MVP 1
 
-Bản v0.3. Phạm vi là demo web một tab cho một người thực hiện trong 10 ngày. Hành vi dưới đây là hợp đồng dự kiến, chưa phải tính năng đã chạy. Các giá trị cấu hình nằm ở bảng tham số cuối tài liệu.
+Bản v0.4. Phạm vi là demo web một tab cho một người thực hiện trong 10 ngày. Hành vi dưới đây là hợp đồng dự kiến, chưa phải tính năng đã chạy. Các giá trị cấu hình nằm ở bảng tham số cuối tài liệu.
+
+## Thay đổi từ v0.3
+
+Nhánh FALL báo nhầm trên phần lớn bản ghi hoạt động thường ngày, kể cả đi bộ chậm và đi cầu thang chậm (GATES.md). v0.4 thêm hai lớp. Một FALL đã xác nhận chỉ mở incident nếu sau đó người đeo nằm yên. Khi incident mở, HUD hỏi "Are you OK?" và đếm ngược trước khi báo người chăm sóc; người đeo bấm "I'm OK" để hủy báo nhầm. Đánh đổi: ngã thật được báo chậm hơn, gồm thời gian chờ nằm yên và thời gian đếm ngược.
 
 ## Thay đổi từ v0.2
 
@@ -16,7 +20,7 @@ Camera và IMU làm hai việc khác nhau. Camera cho biết phía trước có 
 
 Kịch bản S1: người đeo đi trong nhà buổi tối, vào vùng cầu thang. HUD nhắc "Stairs ahead. Use the handrail." Camera chụp khung hình tại thời điểm đó và SAM xác nhận có cầu thang. Không ai bị báo.
 
-Kịch bản S2: người đeo ngã gần cầu thang. Hệ thống báo liên hệ 1 ngay và HUD hỏi "Are you OK?". Người chăm sóc chưa xác nhận đúng hạn thì chuyển liên hệ 2. Agent phân tích khung hình và đề xuất sửa môi trường.
+Kịch bản S2: người đeo ngã gần cầu thang và nằm yên. HUD hỏi "Are you OK?" và đếm ngược. Không có phản hồi thì báo liên hệ 1. Người chăm sóc chưa xác nhận đúng hạn thì chuyển liên hệ 2. Agent phân tích khung hình và đề xuất sửa môi trường.
 
 Output INSTABILITY của model vẫn được lưu cùng xác suất, nhưng không tạo incident, không hiện trên HUD và không vào câu chuyện demo.
 
@@ -66,8 +70,12 @@ Policy chạy bằng code. Mọi gửi cảnh báo trong P0 dùng simulated sink
 |---|---|---|
 | Người đeo đi vào zone có `fall_exposure` trong scene manifest. | Advisory. | HUD hiện `advisory_text` của zone ngay. Lấy frame camera tại thời điểm vào zone và gọi SAM với `hazard_prompt` của zone. Không báo ai. |
 | Vào lại cùng zone trong `advisory_cooldown_seconds`. | Không hiển thị. | Ghi log, không hiện lại HUD. |
-| Detector xác nhận FALL. | Critical incident. | Báo contact 1 ngay, hiện "Are you OK?" trên HUD, bắt đầu hạn caregiver và xếp analysis. Không chờ self-report, SAM hoặc agent. |
-| Người đeo bấm "I'm OK" sau FALL. | Thông tin. | Lưu self-report kèm thời điểm và hiển thị cho người chăm sóc. Không hủy cảnh báo hay escalation. |
+| Detector xác nhận FALL. | Ứng viên. | Chưa tạo incident. Chờ người đeo nằm yên trong `fall_stillness_window_seconds`. |
+| Ứng viên có khoảng nằm yên `fall_stillness_seconds`. | Critical incident, trạng thái awaiting_wearer. | Hiện "Are you OK?" trên HUD và đếm ngược `wearer_cancel_window_seconds`. Xếp analysis. Chưa báo ai. |
+| Ứng viên hết hạn mà không nằm yên. | Bị loại. | Ghi vào danh sách bị loại để báo cáo, không tạo incident. |
+| Người đeo bấm "I'm OK" trong lúc đếm ngược. | cancelled_by_wearer. | Không báo ai. Lưu self-report làm nhãn báo nhầm. |
+| Hết đếm ngược, không có phản hồi. | alerted. | Báo contact 1 và bắt đầu hạn caregiver. Không chờ SAM hoặc agent. |
+| Người đeo bấm "I'm OK" sau khi đã báo. | Thông tin. | Lưu self-report, hiển thị cho người chăm sóc. Không hủy cảnh báo hay escalation. |
 | Đã báo contact 1, hết hạn caregiver chưa ack. | Escalation. | Chuyển contact 2 một lần. |
 | Caregiver ack trước khi gửi contact 2. | Ack. | Lưu ack và chặn escalation chưa gửi. |
 
@@ -75,7 +83,7 @@ Advisory không phải incident. Nó được ghi vào action log của session 
 
 Hazard context đến từ zone đã khai báo, ghi là Authored location. SAM cung cấp xác nhận hình ảnh độc lập, ghi là Visual confirmation. Không gộp hai nguồn thành một kết luận. Một mask cầu thang không cho biết khoảng cách hoặc nguyên nhân ngã.
 
-Mỗi FALL đã xác nhận tạo một incident. FALL mới trong khi incident trước còn mở và cách nhau dưới `fall_merge_seconds` được gộp vào incident đó. Cooldown của detector không được lọc mất một FALL đã xác nhận.
+Mỗi FALL đã xác nhận trở thành ứng viên; ứng viên chỉ mở incident khi thấy nằm yên. FALL mới cách incident đang mở dưới `fall_merge_seconds` được gộp vào incident đó. Cooldown của detector không được lọc mất một FALL đã xác nhận.
 
 Caregiver ack ghi việc nhận xử lý, không khẳng định người đeo đã an toàn. Ack lặp lại trả cùng kết quả, không tạo ack mới.
 
@@ -101,7 +109,7 @@ G2 đã đạt trên ảnh nhà khối hộp. Ngày 5 chạy lại `backend/tool
 | AC04 | SAM trả mask thật trên chính loại ảnh dùng trong demo; mask gắn đúng ảnh, có trạng thái NoMatch/lỗi. |
 | AC05 | Có vòng agent dùng tool thật và summary liên kết evidence IDs. |
 | AC06 | Vào zone `fall_exposure` hiện advisory trên HUD trong `advisory_hud_latency_ms`, không gửi thông báo cho ai; kết quả SAM được ghi kèm advisory; vào lại trong cooldown không hiện lại. |
-| AC07 | FALL tạo Critical incident, báo contact 1 và hiện "Are you OK?" ngay; self-report được lưu nhưng không hủy cảnh báo; cooldown detector không chặn FALL. |
+| AC07 | FALL có nằm yên sau đó tạo Critical incident và hiện "Are you OK?" với đếm ngược. "I'm OK" trong lúc đếm hủy và không báo ai; hết đếm ngược thì báo contact 1; "I'm OK" sau đó chỉ được ghi. Cooldown detector không chặn FALL. Tỉ lệ bắt ngã và báo nhầm có và không có bộ lọc nằm yên được công bố. |
 | AC08 | Ack trước hạn chặn contact 2; không ack thì contact 2 nhận một thông báo mô phỏng. |
 | AC09 | Refresh/reconnect phục hồi snapshot; hai lần Start có detector context và incident riêng. |
 | AC10 | Với DB hoạt động bình thường, Stop chặn action muộn và startup sau restart đánh dấu run cũ Interrupted, không resume detector. Commit lỗi chỉ yêu cầu best-effort dừng/cancel task, log và ghi Interrupted nếu còn ghi được. |
@@ -119,6 +127,8 @@ Các giá trị Default bên dưới là cấu hình khởi đầu để đo. Đ
 | fall_confirmation_seconds | 0.5 | Cơ chế hiện tại; nếu đổi inference stride phải xác nhận lại theo thời gian. |
 | fall_threshold, svm_fall_threshold | 0.55 và 2.5 g, theo config hiện tại | Ghi nguồn quyết định (model hoặc luật SVM); pin trong session. |
 | fall_merge_seconds | 10 | FALL cách nhau dưới khoảng này được gộp vào một incident. |
+| fall_stillness_seconds, fall_stillness_window_seconds, fall_stillness_svm_std_max, fall_stillness_gyro_mean_max | 2 s, 10 s, 0,05 g, 10 °/s (mức Trung bình, GATES.md) | Bộ lọc nằm yên sau FALL. |
+| wearer_cancel_window_seconds | 7 | Thời gian HUD đếm ngược trước khi báo contact 1. Người dùng chọn trong khoảng 5 đến 7 giây. |
 | advisory_cooldown_seconds | 60 | Không hiện lại advisory của cùng zone trong khoảng này. |
 | advisory_hud_latency_ms | 1000 | Mục tiêu từ lúc vào zone tới lúc HUD hiện. |
 | caregiver_ack_timeout_seconds | 20 | Tính từ lúc contact 1 nhận thông báo mô phỏng. |

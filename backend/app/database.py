@@ -69,6 +69,7 @@ def _upgrade_db() -> None:
         "ALTER TABLE alert_events ADD COLUMN source_start_ms INTEGER",
         "ALTER TABLE alert_events ADD COLUMN source_end_ms INTEGER",
         "ALTER TABLE alert_events ADD COLUMN decision_source TEXT",
+        "ALTER TABLE alert_events ADD COLUMN spatial_state TEXT",
     ]
     with engine.connect() as conn:
         for sql in migrations:

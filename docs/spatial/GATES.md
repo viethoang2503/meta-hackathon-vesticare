@@ -88,7 +88,26 @@ Chạy `PYTHONPATH=. python ml/scripts/gate_g1_daily_by_activity.py`. Cùng đư
 
 Báo nhầm không chỉ nằm ở hoạt động mạnh như chạy bộ, nhảy hay ngồi phịch xuống, vốn chủ yếu đến từ luật SVM. Model Keras cũng tạo incident khi đi bộ chậm (D01, cả 10 incident), đi cầu thang chậm (D05, 18/20 file SA), nằm xuống (D12, D14) và cúi người (D16). Người cao tuổi đi cầu thang chậm không bị báo (D05, 0/10). Kịch bản S1 (đi bộ) không tạo incident, nhưng điều đó không chứng minh đi bộ nói chung không bị báo nhầm.
 
-Hướng xử lý cần đo, chưa làm: chỉ xác nhận FALL khi sau va chạm có một khoảng nằm yên đủ dài, rồi đo lại tỉ lệ bắt ngã trên F* và báo nhầm trên D* bằng chính các script này.
+## Bộ lọc nằm yên sau FALL (2026-10-29)
+
+Một FALL đã xác nhận chỉ mở incident nếu sau đó người đeo nằm yên (`StillnessRule` trong `backend/app/services/monitoring.py`). Nằm yên được đánh giá trên tín hiệu thô của N giây gần nhất: độ lệch chuẩn SVM và trung bình độ lớn gyro. Hạn chờ tính từ FALL gần nhất. Incident bắt đầu ở đầu đợt FALL cuối cùng.
+
+Tham số được chọn bằng `PYTHONPATH=. python ml/scripts/tune_stillness.py`. Lưới gồm 27 tổ hợp, chạy trên subject TRAIN và VAL của split v2 (3.771 file SisFall), dùng chính `StreamMonitor`. TEST gồm 734 file của subject tập TEST. Dự đoán model được tính theo lô rồi đưa qua `FallDetectionService.add_sample`, nên logic xác nhận giữ nguyên.
+
+| Mức | Quy tắc | TRAIN: bắt ngã / báo nhầm | TEST: bắt ngã / báo nhầm |
+|---|---|---|---|
+| Không lọc | | 100% / 59,9% | 100% (300/300) / 68,4% (297/434) |
+| An toàn | 1 s, std ≤ 0,1 g, gyro ≤ 20 °/s | 100% / 50,6% | 100% (300/300) / 59,9% (260/434) |
+| **Trung bình (đang dùng)** | **2 s, std ≤ 0,05 g, gyro ≤ 10 °/s** | **99,8% / 45,0%** | **99,3% (298/300) / 55,5% (241/434)** |
+| Chặt | 3 s, std ≤ 0,03 g, gyro ≤ 10 °/s | 99,3% / 37,0% | 97,7% (293/300) / 47,9% (208/434) |
+
+Ba mức được định nghĩa từ số TRAIN. Người dùng chọn mức Trung bình sau khi xem cả bảng TEST, nên TEST không còn hoàn toàn chưa được dùng cho quyết định này. "Báo nhầm" là tỉ lệ file hoạt động thường ngày có ít nhất một incident.
+
+Kết luận: bộ lọc giảm báo nhầm từ 68,4% xuống 55,5% file và bỏ sót 2/300 cú ngã. Phần lớn báo nhầm còn lại được xử lý bằng đếm ngược trên HUD, nơi người đeo bấm "I'm OK" để hủy (SPEC v0.4). Hai ứng viên S1 có người khỏe leo cầu thang vẫn tạo incident vì luật SVM, kể cả khi đã có bộ lọc.
+
+Bộ lọc còn sửa lại S2. Trước đây incident S2 mở ở 14.720 ms. Tín hiệu thô cho thấy đó là model kích hoạt lúc đang đi bộ (đỉnh 1,74 g, vẫn cử động). Cú ngã thật nằm ở giây 24 đến 25 (đỉnh 5,18 g), sau đó nằm yên từ giây 26. Với bộ lọc, incident bắt đầu ở 23.940 ms và mở ở khoảng 27,1 s.
+
+Chạy trên instance cô lập qua API: không phản hồi thì incident đi từ awaiting_wearer sang alerted và contact 1 nhận tin sau 7 s; gọi "I'm OK" trong lúc đếm ngược thì incident là cancelled_by_wearer và không ai được báo. Độ trễ từ va chạm tới lúc báo người chăm sóc trong S2 khoảng 10 s (khoảng 3 s chờ nằm yên và 7 s đếm ngược).
 
 Lưu ý pipeline: trong `build_subject_independent_dataset.py`, nhãn SisFall giữ nguyên từ `preprocess.get_label_from_filename`, nơi `F* = 1`. Trong không gian 3 lớp, 1 là INSTABILITY. Model hiện tại dự đoán FALL cho 80% cửa sổ ngã SisFall, nên weights đang dùng có lẽ không được train từ pipeline này (suy luận, chưa có manifest). Nếu train lại bằng script này phải sửa ánh xạ nhãn trước.
 

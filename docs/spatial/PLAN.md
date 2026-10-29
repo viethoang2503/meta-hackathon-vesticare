@@ -62,7 +62,7 @@ Chạy một vòng tool calling thật, xác nhận model ID, output schema và 
 | 4 | Timeline, frame lookup, marker và evidence drawer; Start/Stop. | AC03 và phần Stop/refresh của AC09/AC10. |
 | 5 | SAM adapter và lưu mask/status; kiểm tra ảnh sau hoàn thiện nội thất. | AC04, các trạng thái thiếu ảnh/NoMatch/lỗi. |
 | 6 | Agent tools, summary có evidence IDs và environmental fixes nhỏ. | AC05 và timeout không chặn FALL trong AC11. |
-| 7 | HUD advisory theo zone có SAM xác nhận, HUD "Are you OK?" khi ngã, caregiver ack và hai contact mô phỏng. | AC06, AC07, AC08. |
+| 7 | HUD advisory theo zone có SAM xác nhận, HUD "Are you OK?" có đếm ngược khi ngã, caregiver ack và hai contact mô phỏng. Backend của đếm ngược và hủy đã làm ở Ngày 3. | AC06, AC07, AC08. |
 | 8 | Hoàn thiện S1/S2 và các bài thử T1 đến T6, đo FPS/latency và tỉ lệ báo nhầm FALL, kiểm tra Start/Stop/restart. | AC09 đến AC12 theo phạm vi bắt buộc và best-effort đã ghi; khóa tính năng. |
 | 9 | Rehearse DEMO, kiểm tra chạy từ hướng dẫn, asset licences và recording. | Một vòng ba phút cùng evidence, lỗi còn lại được phân loại. |
 | 10 | Sửa lỗi cản demo, quay video, hoàn thiện submission và giới hạn. | Bản chạy, hướng dẫn, bảng AC và số đo thật. |
@@ -77,8 +77,8 @@ Chỉ có hai scenario như trong [DEMO.md](DEMO.md): S1 đi vào vùng cầu th
 |---|---|---|
 | T1 | Vào zone cầu thang. | HUD hiện advisory trong mục tiêu latency; SAM chạy trên frame lúc vào zone và kết quả được ghi; không gửi thông báo. |
 | T2 | Vào lại zone cầu thang trong cooldown. | Không hiện lại HUD; log ghi lần vào lại. |
-| T3 | FALL ngay sau khi detector vừa tiêu thụ cooldown ở một cửa sổ trước. | Critical incident và contact 1 ngay; cooldown không chặn. |
-| T4 | Bấm "I'm OK" sau FALL. | Self-report được lưu và hiển thị; contact 1 đã nhận, hạn caregiver vẫn chạy. |
+| T3 | FALL ngay sau khi detector vừa tiêu thụ cooldown ở một cửa sổ trước, rồi nằm yên. | Critical incident mở; cooldown không chặn. Hết đếm ngược thì contact 1 nhận cảnh báo. |
+| T4 | Bấm "I'm OK" trong lúc đếm ngược, và ở một run khác sau khi đã báo. | Trong lúc đếm: cancelled_by_wearer, không ai được báo. Sau khi báo: chỉ ghi self-report, cảnh báo giữ nguyên. |
 | T5 | Hai FALL cách nhau dưới fall_merge_seconds. | Một incident, không gửi contact 1 lần thứ hai. |
 | T6 | Caregiver ack trước hạn, và một run khác không ack. | Run đầu chặn contact 2; run sau gửi contact 2 một lần. |
 | T7 | SAM timeout/NoMatch/response lỗi hoặc frame thiếu. | Hiển thị trạng thái đúng, không bịa mask; FALL và advisory vẫn được xử lý. |

@@ -27,7 +27,7 @@
       "incidents": [
         {
           "index": 0,
-          "source_start_ms": 14720,
+          "source_start_ms": 23940,
           "source_end_ms": 28400,
           "decision_source": "keras",
           "max_fall_probability": 0.9937523007392883,
@@ -65,7 +65,7 @@
       "incidents": [
         {
           "index": 0,
-          "source_start_ms": 15160,
+          "source_start_ms": 23740,
           "source_end_ms": 28400,
           "decision_source": "keras",
           "max_fall_probability": 0.9844068288803101,

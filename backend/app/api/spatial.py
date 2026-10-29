@@ -8,6 +8,7 @@ snapshots; the run lifecycle lives in services/spatial_runs.py.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -37,6 +38,7 @@ class IncidentOut(BaseModel):
     peak_svm: float
     is_acknowledged: bool
     notification_status: str | None
+    state: str | None
 
 
 class ActionOut(BaseModel):
@@ -59,6 +61,17 @@ class SessionSnapshot(BaseModel):
     model_source: str
     incidents: list[IncidentOut]
     actions: list[ActionOut]
+
+
+class WearerResponse(BaseModel):
+    response: Literal["ok"]
+
+
+class WearerResult(BaseModel):
+    incident_id: int
+    applied: bool
+    incident_state: str | None
+    reason: str | None
 
 
 def _snapshot_or_404(session_id: str) -> dict:
@@ -93,3 +106,11 @@ async def stop_session(session_id: str):
 @router.get("/sessions/{session_id}", response_model=SessionSnapshot)
 def get_session(session_id: str):
     return _snapshot_or_404(session_id)
+
+
+@router.post("/incidents/{incident_id}/wearer-response", response_model=WearerResult)
+async def wearer_response(incident_id: int, body: WearerResponse):
+    result = await spatial_runs.wearer_ok(incident_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return result

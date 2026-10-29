@@ -12,7 +12,7 @@ Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1,
 - Start và Stop cho replay 1x. Mỗi lần chạy có session riêng.
 - Classifier, SAM và agent chạy thật. Nhà, vị trí, đường đi và HUD được mô phỏng.
 - Vào vùng nguy hiểm thì HUD nhắc phòng ngừa, SAM xác nhận trên khung hình, không báo ai.
-- FALL báo người chăm sóc ngay và HUD hỏi "Are you OK?".
+- FALL chỉ được tính khi người đeo nằm yên sau đó. HUD hỏi "Are you OK?" và đếm ngược 7 giây; người đeo hủy được báo nhầm, im lặng thì báo người chăm sóc.
 - Không phát hiện mất thăng bằng hay suýt ngã bằng IMU (xem GATES.md).
 - Có xác nhận của người chăm sóc và escalation mô phỏng tới liên hệ thứ hai.
 - Mọi phần mở rộng bắt đầu sau khi MVP 1 hoàn thành và được nghiệm thu.

@@ -113,3 +113,14 @@ OPENWEATHER_CITY = os.getenv("OPENWEATHER_CITY", "Hanoi")
 
 SPATIAL_RUN_TIMEOUT_SECONDS = 180
 SPATIAL_FALL_MERGE_SECONDS = 10
+
+# Mot FALL da xac nhan chi mo incident neu sau do nguoi deo nam yen.
+# Muc "Trung binh" do nguoi dung chon: TRAIN recall 0.998, TEST recall 0.993 va bao nham 55,5%
+# file hoat dong thuong ngay (ml/scripts/tune_stillness.py; docs/spatial/GATES.md).
+FALL_STILLNESS_SECONDS = 2.0
+FALL_STILLNESS_WINDOW_SECONDS = 10.0
+FALL_STILLNESS_SVM_STD_MAX = 0.05
+FALL_STILLNESS_GYRO_MEAN_MAX = 10.0
+
+# Policy B: HUD dem nguoc truoc khi bao nguoi cham soc; nguoi deo bam "I'm OK" de huy.
+WEARER_CANCEL_WINDOW_SECONDS = 7

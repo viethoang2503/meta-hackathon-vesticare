@@ -36,7 +36,8 @@ from app.services.spatial_runs import (  # noqa: E402
     session_snapshot,
 )
 
-S2_FALL_START_MS = 14720
+# The SisFall impact; the model also fires at 14720 ms while still walking, which the stillness rule drops.
+S2_FALL_START_MS = 23940
 
 
 class PausedAfterStatusRead(OrmSession):
@@ -66,7 +67,15 @@ class SpatialRunsTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def manager(self, **kwargs):
-        return SpatialRunManager(session_factory=self.db, **{"realtime": False, "run_timeout_seconds": 0.5, **kwargs})
+        return SpatialRunManager(
+            session_factory=self.db,
+            **{"realtime": False, "run_timeout_seconds": 0.5, "wearer_cancel_seconds": 0.2, **kwargs},
+        )
+
+    async def wait_for_incident(self, sid):
+        while not session_snapshot(sid, self.db)["incidents"]:
+            await asyncio.sleep(0.05)
+        return session_snapshot(sid, self.db)["incidents"][0]["id"]
 
     def run_to_end(self, scenario_id):
         """Replay the whole recording, let in-flight notifications land, then Stop."""
@@ -80,7 +89,7 @@ class SpatialRunsTest(unittest.TestCase):
             return sid
         return session_snapshot(asyncio.run(go()), self.db)
 
-    def test_s2_opens_one_fall_incident_and_notifies_contact_1_once(self):
+    def test_s2_fall_alerts_contact_1_once_when_the_wearer_does_not_answer(self):
         snap = self.run_to_end("S2")
         self.assertEqual((snap["status"], snap["end_reason"]), ("Stopped", "user_stop"))
         self.assertTrue(snap["recording_ended"])
@@ -90,6 +99,7 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertEqual(incident["source_start_ms"], S2_FALL_START_MS)
         self.assertEqual(incident["decision_source"], "keras")
         self.assertEqual(incident["notification_status"], "simulated")
+        self.assertEqual(incident["state"], "alerted")
         self.assertEqual(
             [(a["kind"], a["target"], a["incident_id"]) for a in snap["actions"]],
             [("notify", "contact_1", incident["id"])],
@@ -99,6 +109,52 @@ class SpatialRunsTest(unittest.TestCase):
         snap = self.run_to_end("S1")
         self.assertEqual(snap["incidents"], [])
         self.assertEqual(snap["actions"], [])
+
+    def test_im_ok_inside_the_countdown_cancels_and_nobody_is_notified(self):
+        async def go():
+            m = self.manager(run_timeout_seconds=60, wearer_cancel_seconds=3)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            result = await m.wearer_ok(incident_id)
+            await asyncio.sleep(3.5)
+            await m.stop(sid)
+            return result, session_snapshot(sid, self.db)
+        result, snap = asyncio.run(go())
+        self.assertEqual((result["applied"], result["incident_state"]), (True, "cancelled_by_wearer"))
+        self.assertEqual(snap["incidents"][0]["state"], "cancelled_by_wearer")
+        self.assertEqual([(a["kind"], a["target"]) for a in snap["actions"]], [("self_report", "wearer")])
+
+    def test_im_ok_after_the_alert_is_recorded_but_does_not_cancel(self):
+        async def go():
+            m = self.manager(run_timeout_seconds=60)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            await asyncio.sleep(0.6)
+            result = await m.wearer_ok(incident_id)
+            again = await m.wearer_ok(incident_id)
+            await m.stop(sid)
+            return result, again, session_snapshot(sid, self.db)
+        result, again, snap = asyncio.run(go())
+        self.assertEqual((result["applied"], result["incident_state"]), (True, "alerted"))
+        self.assertEqual((again["applied"], again["reason"]), (False, "already_recorded"))
+        self.assertEqual(
+            [(a["kind"], a["target"]) for a in snap["actions"]],
+            [("notify", "contact_1"), ("self_report", "wearer")],
+        )
+
+    def test_stop_during_the_countdown_means_no_later_notification(self):
+        async def go():
+            m = self.manager(run_timeout_seconds=60, wearer_cancel_seconds=2)
+            sid = await m.start("S2")
+            await self.wait_for_incident(sid)
+            await m.stop(sid)
+            at_stop = session_snapshot(sid, self.db)
+            await asyncio.sleep(2.5)
+            return at_stop, session_snapshot(sid, self.db)
+        at_stop, later = asyncio.run(go())
+        self.assertEqual(later, at_stop)
+        self.assertEqual(later["incidents"][0]["state"], "awaiting_wearer")
+        self.assertEqual(later["actions"], [])
 
     def test_run_timeout_stops_the_run(self):
         async def go():
@@ -196,20 +252,19 @@ class SpatialRunsTest(unittest.TestCase):
     def test_fall_opens_an_incident_even_when_the_legacy_cooldown_suppresses_it(self):
         scenario = load_scenario("S2")
         legacy_key, monitor = "test:legacy-cooldown", StreamMonitor("test:spatial", fall_detection_service)
-        first_fall = None
+        at_impact = None
         try:
             for ms, sample in zip(scenario.source_ms, scenario.samples):
                 legacy = fall_detection_service.add_sample(legacy_key, sample)
-                event = monitor.add_sample(int(ms), sample)
-                if legacy.state == "FALL" and first_fall is None:
-                    first_fall = (int(ms), legacy.alert_suppressed, event)
+                monitor.add_sample(int(ms), sample)
+                if int(ms) == S2_FALL_START_MS:
+                    at_impact = legacy
         finally:
             fall_detection_service.reset_patient(legacy_key)
             monitor.close()
-        ms, suppressed, event = first_fall
-        self.assertEqual(ms, S2_FALL_START_MS)
-        self.assertTrue(suppressed, "legacy cooldown, consumed by earlier INSTABILITY windows, hides this fall")
-        self.assertEqual(event.kind, "opened")
+        self.assertEqual(at_impact.state, "FALL")
+        self.assertTrue(at_impact.alert_suppressed, "the legacy cooldown, consumed by earlier windows, hides the impact")
+        self.assertEqual([i.source_start_ms for i in monitor.incidents], [S2_FALL_START_MS])
 
 
 class DecisionSourceTest(unittest.TestCase):
@@ -222,7 +277,7 @@ class DecisionSourceTest(unittest.TestCase):
         for ms, sample in zip(scenario.source_ms, scenario.samples):
             monitor.add_sample(int(ms), sample)
         monitor.close()
-        self.assertEqual([(i.source_start_ms, i.decision_source) for i in monitor.incidents], [(3440, "heuristic")])
+        self.assertEqual([(i.source_start_ms, i.decision_source) for i in monitor.incidents], [(22660, "heuristic")])
 
 
 class SpatialApiTest(unittest.TestCase):
