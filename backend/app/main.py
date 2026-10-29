@@ -109,5 +109,8 @@ def health_check():
     }
 
 
+ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+app.mount("/spatial-assets", StaticFiles(directory=ASSETS_DIR), name="spatial-assets")
+
 DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 app.mount("/", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")

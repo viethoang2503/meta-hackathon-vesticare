@@ -60,6 +60,36 @@ Chạy `PYTHONPATH=. python ml/scripts/gate_g1_incidents.py`. Mỗi bản ghi đ
 
 Ở mức incident, nhánh FALL bắt mọi file ngã, nhưng báo nhầm trên phần lớn file hoạt động thường ngày của người trẻ. Phần lớn báo nhầm đến từ model, không phải luật SVM. Hoạt động thường ngày của SisFall gồm cả chạy bộ, nhảy và ngồi xuống nhanh; chưa tách theo mã hoạt động. Tỉ lệ này phải được công bố theo AC12 và là việc cần làm tiếp sau MVP 1.
 
+### Báo nhầm theo hoạt động thường ngày
+
+Chạy `PYTHONPATH=. python ml/scripts/gate_g1_daily_by_activity.py`. Cùng đường chạy và subject như trên, tách theo mã hoạt động SisFall. Tên hoạt động lấy từ `SisFall_dataset/Readme.txt`. Người cao tuổi không làm D06, D13, D18, D19.
+
+| Code | Activity | SA files with incident | SE files with incident | Incident sources |
+|---|---|---|---|---|
+| D01 | Walking slowly | 3/4 | 1/2 | keras 10 |
+| D02 | Walking quickly | 3/4 | 1/2 | keras 2, svm_rule 6 |
+| D03 | Jogging slowly | 4/4 | 2/2 | svm_rule 6 |
+| D04 | Jogging quickly | 4/4 | 2/2 | svm_rule 6 |
+| D05 | Walking upstairs and downstairs slowly | 18/20 | 0/10 | keras 19 |
+| D06 | Walking upstairs and downstairs quickly | 20/20 | not performed | keras 2, svm_rule 18 |
+| D07 | Slowly sit in a half height chair and up slowly | 9/20 | 0/10 | keras 9 |
+| D08 | Quickly sit in a half height chair and up quickly | 11/20 | 4/10 | keras 4, svm_rule 11 |
+| D09 | Slowly sit in a low height chair and up slowly | 12/20 | 2/10 | keras 11, svm_rule 3 |
+| D10 | Quickly sit in a low height chair and up quickly | 11/20 | 6/10 | keras 11, svm_rule 6 |
+| D11 | Trying to get up, collapse into a chair | 20/20 | 6/10 | svm_rule 26 |
+| D12 | Lying slowly, then sit again | 18/20 | 6/10 | keras 24 |
+| D13 | Lying quickly, then sit again | 17/20 | not performed | keras 14, svm_rule 3 |
+| D14 | On one's back, change to lateral position and back | 20/20 | 10/10 | keras 30 |
+| D15 | Standing, slowly bending at knees, getting up | 7/20 | 5/10 | keras 12 |
+| D16 | Standing, slowly bending without bending knees | 19/20 | 2/10 | keras 21 |
+| D17 | Get into a car, remain seated, get out | 12/20 | 2/10 | keras 14 |
+| D18 | Stumble while walking | 20/20 | not performed | keras 6, svm_rule 14 |
+| D19 | Gently jump without falling | 20/20 | not performed | keras 4, svm_rule 16 |
+
+Báo nhầm không chỉ nằm ở hoạt động mạnh như chạy bộ, nhảy hay ngồi phịch xuống, vốn chủ yếu đến từ luật SVM. Model Keras cũng tạo incident khi đi bộ chậm (D01, cả 10 incident), đi cầu thang chậm (D05, 18/20 file SA), nằm xuống (D12, D14) và cúi người (D16). Người cao tuổi đi cầu thang chậm không bị báo (D05, 0/10). Kịch bản S1 (đi bộ) không tạo incident, nhưng điều đó không chứng minh đi bộ nói chung không bị báo nhầm.
+
+Hướng xử lý cần đo, chưa làm: chỉ xác nhận FALL khi sau va chạm có một khoảng nằm yên đủ dài, rồi đo lại tỉ lệ bắt ngã trên F* và báo nhầm trên D* bằng chính các script này.
+
 Lưu ý pipeline: trong `build_subject_independent_dataset.py`, nhãn SisFall giữ nguyên từ `preprocess.get_label_from_filename`, nơi `F* = 1`. Trong không gian 3 lớp, 1 là INSTABILITY. Model hiện tại dự đoán FALL cho 80% cửa sổ ngã SisFall, nên weights đang dùng có lẽ không được train từ pipeline này (suy luận, chưa có manifest). Nếu train lại bằng script này phải sửa ánh xạ nhãn trước.
 
 ## G2. SAM trên ảnh demo
@@ -77,7 +107,20 @@ Chạy `backend/tools/gate_sam.py --prompt stairs` trên bốn ảnh render từ
 
 Mask đã giải mã bằng `@meta-sam/parser` 0.1.0 (`backend/tools/sam_masks/`). Cả ba ảnh cầu thang trả đúng 1 mask, không có diagnostic; ảnh phòng khách trả 0 mask. Kích thước raster khớp box. Tỉ lệ pixel thuộc mask trong box: 74% (nhìn từ dưới), 25% (nhìn ngang, box gần bằng cả khung), 71% (nhìn từ trên). Ảnh chồng mask lên frame nằm trong `docs/spatial/evidence/g2/*.mask.png`. Kiểm tra bằng mắt: mask bám theo các bậc; ảnh nhìn ngang có gồm chiếu nghỉ; ảnh nhìn từ dưới có mép lởm chởm ở bậc trên cùng.
 
-Chưa kiểm tra: IoU với mask đúng render từ scene, và ảnh sau khi có nội thất đầy đủ. Làm ở Ngày 5 (AC04).
+### Chạy lại trên nhà có nội thất (Ngày 3, 2026-10-29)
+
+Bốn preset camera kính trong `assets/homes/home1/manifest.json`, render bởi `/spatial/` (ảnh 329×246). Cùng script và prompt `stairs`.
+
+| Preset | Kết quả | Thời gian | Tỉ lệ pixel mask trong box |
+|---|---|---|---|
+| hall_to_stairs | 1 vật thể | 2,31 s | 0,67 |
+| stairs_bottom | 1 vật thể | 3,64 s | 0,78 |
+| landing_down | 1 vật thể | 2,71 s | 0,46 |
+| living_room (sofa, bàn, thảm, đèn; không có cầu thang) | 0 vật thể | 0,56 s | |
+
+Ảnh chồng mask: `docs/spatial/evidence/home1/glasses-sam-masks.png`. Kiểm tra bằng mắt: mask bám các bậc ở cả ba góc; góc từ chiếu nghỉ nhìn xuống có lấn một phần mặt chiếu nghỉ ở mép dưới. Phòng khách có nội thất không bị nhận nhầm.
+
+Chưa kiểm tra: IoU với mask đúng render từ scene. Ngày 5 chạy lại nếu nội thất hoặc ánh sáng còn thay đổi.
 
 ## G3. Tool calling
 

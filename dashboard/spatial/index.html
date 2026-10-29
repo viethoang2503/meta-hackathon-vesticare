@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vesti-Care Spatial</title>
+<style>
+  :root { --bg: #14171c; --panel: #1d2128; --line: #2e333c; --text: #e7e3db; --muted: #9aa0a8; --accent: #d9822b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px system-ui, -apple-system, sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: 48px 1fr; height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; }
+  header .tag { color: var(--muted); font-size: 12px; }
+  #view { position: relative; overflow: hidden; }
+  #view canvas { display: block; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  #glasses { width: 100%; aspect-ratio: 4 / 3; background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  #glasses canvas { width: 100% !important; height: 100% !important; display: block; }
+  .source { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  select, button, label.toggle { background: #262b33; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: inherit; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #selection { font-size: 13px; line-height: 1.5; min-height: 3em; }
+  #selection .muted { color: var(--muted); }
+  .zone-tag { position: absolute; transform: translate(-50%, -100%); font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #14171ccc; pointer-events: none; white-space: nowrap; }
+  .zone-tag.hazard { color: var(--accent); }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Vesti-Care Spatial</h1>
+    <span class="tag">Authored home simulation. Locations come from the scenario.</span>
+  </header>
+  <main id="view"></main>
+  <aside>
+    <section>
+      <h2>Glasses camera</h2>
+      <div id="glasses"></div>
+      <div class="row" style="margin-top:8px">
+        <select id="glasses-preset" aria-label="Glasses camera preset"></select>
+      </div>
+      <div class="source">Rendered frame from the authored home, not a recording.</div>
+    </section>
+    <section>
+      <h2>View</h2>
+      <div class="row">
+        <label class="toggle"><input type="checkbox" id="cutaway" checked /> Cutaway walls</label>
+        <label class="toggle"><input type="checkbox" id="hazards" checked /> Hazard zones</label>
+        <button id="reset-view" type="button">Overview</button>
+      </div>
+    </section>
+    <section>
+      <h2>Selection</h2>
+      <div id="selection"><span class="muted">Click the stairs, the rug or a dining chair.</span></div>
+    </section>
+  </aside>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -16,6 +16,14 @@ Ngày 2 đã xong ngày 2026-10-29. Kết quả đo:
 - Bộ test: 120 passed, gồm 8 test mới trong `backend/tests/test_spatial_runs.py`.
 - Còn lại: route `/api/sensor/*` cũ vẫn dùng cooldown và vẫn tạo alert INSTABILITY cho dashboard cũ. Phân tích bằng agent làm ở Ngày 6, escalation và ack ở Ngày 7.
 
+Ngày 3 đã xong ngày 2026-10-29. Kết quả:
+
+- Nhà một tầng trong `assets/homes/home1/manifest.json`: phòng khách, bếp và phòng ăn, phòng ngủ, phòng tắm, hành lang, cầu thang 8 bậc lên chiếu nghỉ có tay vịn. Nội thất dựng từ khối cơ bản trong `dashboard/spatial/scene.js`, không có asset ngoài. Three.js 0.160.0 nằm trong `dashboard/spatial/vendor/`.
+- `/spatial/` có góc toàn nhà với cutaway, vùng nguy hiểm, chọn vật thể bằng click và camera kính với bốn preset. `backend/tests/test_home_manifest.py` kiểm tra inventory theo SPEC (AC01).
+- SAM chạy lại trên ảnh camera kính của nhà có nội thất: ba preset cầu thang trả một mask bám các bậc, phòng khách trả không vật thể (GATES.md).
+- FPS đo được chỉ là headless với đồ họa phần mềm (khoảng 19); FPS trên máy demo đo ở Ngày 8.
+- Báo nhầm FALL được tách theo hoạt động (GATES.md): model báo nhầm cả khi đi bộ chậm, đi cầu thang chậm, nằm xuống và cúi người.
+
 ## Ngày 1 có gate bắt buộc
 
 ### G1. Model và ý nghĩa nhãn
