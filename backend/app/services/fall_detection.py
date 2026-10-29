@@ -17,7 +17,7 @@ import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Deque
+from typing import Deque, Hashable
 
 import time
 
@@ -88,6 +88,7 @@ class FallDetectionService:
         else:
             self.keras_model = self._load_keras_model()
             self.model_source = "keras" if self.keras_model is not None else "heuristic"
+        self._keras_infer = self._compile_keras(self.keras_model)
 
     def _load_scaler(self) -> tuple[np.ndarray, np.ndarray]:
         if not SCALER_PARAMS_PATH.exists():
@@ -144,9 +145,22 @@ class FallDetectionService:
             logger.warning("Failed to load Keras model: %s — using heuristic", exc)
             return None
 
+    @staticmethod
+    def _compile_keras(model):
+        """Eager calls cost ~112 ms per window, over the 20 ms budget at 50 Hz; a traced call costs ~1.5 ms."""
+        if model is None:
+            return None
+        import tensorflow as tf
+
+        return tf.function(
+            lambda x: model(x, training=False),
+            input_signature=[tf.TensorSpec([1, WINDOW_SIZE, NUM_CHANNELS], tf.float32)],
+            autograph=False,
+        )
+
     def add_sample(
         self,
-        patient_id: int,
+        patient_id: Hashable,
         sample: np.ndarray,
         event_time: datetime | None = None,
         fall_threshold: float | None = None,   # V.6: adaptive threshold
@@ -241,10 +255,10 @@ class FallDetectionService:
 
         if self.interpreter is None or self.input_details is None or self.output_details is None:
             # Try Keras model first
-            if self.keras_model is not None:
+            if self._keras_infer is not None:
                 x = normalized.reshape(1, WINDOW_SIZE, NUM_CHANNELS).astype(np.float32)
                 with self._inference_lock:
-                    output = self.keras_model(x, training=False).numpy().reshape(-1)
+                    output = self._keras_infer(x).numpy().reshape(-1)
                 if output.size >= 3:
                     return float(output[2]), float(output[1])
             # Final fallback: heuristic SVM-based estimate
@@ -311,7 +325,7 @@ class FallDetectionService:
         self.last_alert_at[patient_id] = self._to_utc(event_time)
         return True, False
 
-    def reset_patient(self, patient_id: int) -> None:
+    def reset_patient(self, patient_id: Hashable) -> None:
         """Forget everything this service remembers about one patient.
 
         One call covering the sample buffer, the sustained-FALL streak and the
