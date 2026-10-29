@@ -25,9 +25,9 @@ DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
 # ML Model (3-class: NORMAL / VESTIBULAR_INSTABILITY / FALL)
 # CNN+BiLSTM+Attention: recall-FALL=0.876, FP=1684 (vs 1D-CNN recall=0.849, FP=3039)
-TFLITE_MODEL_PATH  = ML_DIR / "models_3class" / "fall_detection_3class_cnn_bilstm_attn_fp16.tflite"
-KERAS_MODEL_PATH   = ML_DIR / "models_3class" / "fall_detection_3class_cnn_bilstm_attn.keras"
-SCALER_PARAMS_PATH = ML_DIR / "models_3class" / "scaler_params.npz"
+TFLITE_MODEL_PATH  = ML_DIR / "model_3class" / "fall_detection_3class_cnn_bilstm_attn_fp16.tflite"
+KERAS_MODEL_PATH   = ML_DIR / "model_3class" / "fall_detection_3class_cnn_bilstm_attn.keras"
+SCALER_PARAMS_PATH = ML_DIR / "model_3class" / "scaler_params.npz"
 
 
 # ===========================================================================

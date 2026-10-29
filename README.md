@@ -142,7 +142,7 @@ Key endpoints:
 
 ## Model
 
-The backend attempts to load the CNN+BiLSTM+Attention (CBA) TFLite model at startup, then falls back to a rule-based SVM heuristic if loading fails (e.g. missing TFLite runtime on Windows). Trained models go in `ml/models_3class/` (gitignored, not included in this folder — copy them in or retrain with `ml/training/`):
+The backend attempts to load the CNN+BiLSTM+Attention (CBA) TFLite model at startup, then falls back to a rule-based SVM heuristic if loading fails (e.g. missing TFLite runtime on Windows). Trained models live in `ml/model_3class/`. The folder currently holds the Keras models and `scaler_params.npz` but no TFLite export, so the backend loads `fall_detection_3class_cnn_bilstm_attn.keras` through TensorFlow:
 - `fall_detection_3class.tflite` — FP32 production model
 - `fall_detection_3class_cnn_bilstm_attn_fp16.tflite` — FP16 quantized (5.7× smaller, negligible expected accuracy loss; TFLite runtime not verified on Windows)
 

@@ -10,7 +10,7 @@ COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend backend
-COPY ml/models_3class ml/models_3class
+COPY ml/model_3class ml/model_3class
 
 WORKDIR /app/backend
 EXPOSE 8080
