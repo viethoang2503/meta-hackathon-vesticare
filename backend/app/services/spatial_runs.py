@@ -32,12 +32,18 @@ from datetime import datetime, timezone
 import numpy as np
 from sqlalchemy.exc import IntegrityError
 
-from app.config import SCENARIOS_DIR, SPATIAL_RUN_TIMEOUT_SECONDS, WEARER_CANCEL_WINDOW_SECONDS
+from app.config import (
+    IMU_DETAIL_MAX_SECONDS,
+    SCENARIOS_DIR,
+    SPATIAL_RUN_TIMEOUT_SECONDS,
+    WEARER_CANCEL_WINDOW_SECONDS,
+)
 from app import database
 from app.models.schemas import AlertEvent, SpatialAction, SpatialSession
 from app.services.broadcaster import broadcaster
 from app.services.fall_detection import FallDetectionService, fall_detection_service
 from app.services.monitoring import StreamMonitor
+from app.services.scene_context import frame_near, location_at
 
 logger = logging.getLogger(__name__)
 
@@ -339,11 +345,20 @@ class SpatialRunManager:
         return {"incident_id": incident_id, "applied": True, "incident_state": state, "reason": None}
 
 
+def _actions_json(actions) -> list[dict]:
+    return [
+        {"id": a.id, "incident_id": a.incident_id, "kind": a.kind, "target": a.target,
+         "detail": json.loads(a.detail) if a.detail else None, "created_at": a.created_at}
+        for a in actions
+    ]
+
+
 def session_snapshot(session_id: str, session_factory=None) -> dict | None:
     with (session_factory or database.SessionLocal)() as db:
         s = db.get(SpatialSession, session_id)
         if s is None:
             return None
+        scenario_meta = load_scenario(s.scenario_id).meta
         incidents = (
             db.query(AlertEvent)
             .filter(AlertEvent.session_id == session_id)
@@ -366,6 +381,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
             "source_offset_ms": s.source_offset_ms,
             "recording_ended": s.recording_ended,
             "model_source": s.model_source,
+            "scenario": {k: scenario_meta[k] for k in ("id", "title", "duration_ms", "home", "location", "route")},
             "incidents": [
                 {
                     "id": i.id,
@@ -378,13 +394,54 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                     "is_acknowledged": i.is_acknowledged,
                     "notification_status": i.notification_status,
                     "state": i.spatial_state,
+                    "location": location_at(scenario_meta, i.source_start_ms),
                 }
                 for i in incidents
             ],
-            "actions": [
-                {"id": a.id, "incident_id": a.incident_id, "kind": a.kind, "target": a.target, "created_at": a.created_at}
-                for a in actions
-            ],
+            "actions": _actions_json(actions),
+        }
+
+
+def incident_detail(incident_id: int, session_factory=None) -> dict | None:
+    """Everything the evidence drawer shows for one incident, each part labelled with its source."""
+    with (session_factory or database.SessionLocal)() as db:
+        row = db.get(AlertEvent, incident_id)
+        if row is None or row.session_id is None:
+            return None
+        session = db.get(SpatialSession, row.session_id)
+        actions = (
+            db.query(SpatialAction)
+            .filter(SpatialAction.incident_id == incident_id)
+            .order_by(SpatialAction.id)
+            .all()
+        )
+        scenario = load_scenario(session.scenario_id)
+        half = IMU_DETAIL_MAX_SECONDS * 1000 // 2
+        lo, hi = row.source_start_ms - half, row.source_start_ms + half
+        mask = (scenario.source_ms >= lo) & (scenario.source_ms <= hi)
+        imu = [[int(ms), *[round(float(v), 4) for v in sample]] for ms, sample in zip(scenario.source_ms[mask], scenario.samples[mask])]
+        return {
+            "id": row.id,
+            "session_id": row.session_id,
+            "scenario_id": session.scenario_id,
+            "alert_type": row.alert_type,
+            "state": row.spatial_state,
+            "source_start_ms": row.source_start_ms,
+            "source_end_ms": row.source_end_ms,
+            "decision_source": row.decision_source,
+            "fall_probability": row.confidence,
+            "peak_svm": row.peak_svm,
+            "is_acknowledged": row.is_acknowledged,
+            "location": location_at(scenario.meta, row.source_start_ms),
+            "frame": frame_near(session.scenario_id, row.source_start_ms),
+            "imu": {
+                "source": "Scenario-paired recording",
+                "columns": ["source_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"],
+                "units": {"acc": "g", "gyro": "deg/s", "svm": "g"},
+                "segments": scenario.meta["segments"],
+                "samples": imu,
+            },
+            "actions": _actions_json(actions),
         }
 
 

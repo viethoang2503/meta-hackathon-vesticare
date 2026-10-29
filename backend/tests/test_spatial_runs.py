@@ -31,6 +31,7 @@ from app.services.monitoring import StreamMonitor  # noqa: E402
 from app.services.spatial_runs import (  # noqa: E402
     RunAlreadyActive,
     SpatialRunManager,
+    incident_detail,
     _utcnow,
     load_scenario,
     session_snapshot,
@@ -104,6 +105,19 @@ class SpatialRunsTest(unittest.TestCase):
             [(a["kind"], a["target"], a["incident_id"]) for a in snap["actions"]],
             [("notify", "contact_1", incident["id"])],
         )
+
+    def test_incident_detail_brings_location_frame_and_imu_for_the_same_moment(self):
+        snap = self.run_to_end("S2")
+        detail = incident_detail(snap["incidents"][0]["id"], self.db)
+        self.assertEqual(detail["session_id"], snap["id"])
+        self.assertEqual((detail["location"]["zone_id"], detail["location"]["source"]), ("stairs_approach", "Authored location"))
+        self.assertEqual((detail["frame"]["status"], detail["frame"]["id"]), ("Available", "S2-024000"))
+        self.assertLessEqual(detail["frame"]["alignment_error_ms"], 250)
+        times = [row[0] for row in detail["imu"]["samples"]]
+        self.assertEqual((times[0], times[-1]), (S2_FALL_START_MS - 5000, 28400), "window is clipped at the recording's last sample")
+        self.assertEqual(len(times), 474)
+        self.assertEqual(detail["imu"]["source"], "Scenario-paired recording")
+        self.assertEqual(snap["incidents"][0]["location"]["zone_label"], "Foot of the stairs")
 
     def test_s1_walk_produces_no_incident(self):
         snap = self.run_to_end("S1")

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from app.services.spatial_runs import (
     RunAlreadyActive,
     ScenarioNotFound,
+    incident_detail,
     list_scenarios,
     session_snapshot,
     spatial_runs,
@@ -26,6 +27,15 @@ router = APIRouter(prefix="/api/spatial", tags=["Spatial"])
 
 class StartRequest(BaseModel):
     scenario_id: str
+
+
+class LocationOut(BaseModel):
+    source: str
+    x: float
+    z: float
+    zone_id: str | None
+    zone_label: str | None
+    fall_exposure: bool
 
 
 class IncidentOut(BaseModel):
@@ -39,6 +49,7 @@ class IncidentOut(BaseModel):
     is_acknowledged: bool
     notification_status: str | None
     state: str | None
+    location: LocationOut
 
 
 class ActionOut(BaseModel):
@@ -46,6 +57,7 @@ class ActionOut(BaseModel):
     incident_id: int | None
     kind: str
     target: str | None
+    detail: dict | None
     created_at: datetime
 
 
@@ -59,6 +71,7 @@ class SessionSnapshot(BaseModel):
     source_offset_ms: int
     recording_ended: bool
     model_source: str
+    scenario: dict
     incidents: list[IncidentOut]
     actions: list[ActionOut]
 
@@ -114,3 +127,11 @@ async def wearer_response(incident_id: int, body: WearerResponse):
     if result is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return result
+
+
+@router.get("/incidents/{incident_id}")
+def get_incident(incident_id: int) -> dict:
+    detail = incident_detail(incident_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return detail

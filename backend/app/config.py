@@ -124,3 +124,7 @@ FALL_STILLNESS_GYRO_MEAN_MAX = 10.0
 
 # Policy B: HUD dem nguoc truoc khi bao nguoi cham soc; nguoi deo bam "I'm OK" de huy.
 WEARER_CANCEL_WINDOW_SECONDS = 7
+
+# Bang chung cua incident (docs/spatial/SPEC.md, bang tham so)
+FRAME_ALIGNMENT_TOLERANCE_MS = 250
+IMU_DETAIL_MAX_SECONDS = 10

@@ -25,6 +25,25 @@
   #selection .muted { color: var(--muted); }
   .zone-tag { position: absolute; transform: translate(-50%, -100%); font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #14171ccc; pointer-events: none; white-space: nowrap; }
   .zone-tag.hazard { color: var(--accent); }
+  .muted { color: var(--muted); }
+  button:disabled, select:disabled { opacity: .45; }
+  #timeline { position: absolute; left: 16px; right: 16px; bottom: 16px; background: #14171ccc; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  .bar { position: relative; height: 8px; background: #2a2f37; border-radius: 4px; margin-top: 6px; }
+  #timeline-fill { position: absolute; inset: 0 auto 0 0; background: #5aa0e0; border-radius: 4px; }
+  .tick { position: absolute; top: -5px; width: 12px; height: 18px; margin-left: -6px; padding: 0; border: 0; border-radius: 3px; background: #e0483e; cursor: pointer; }
+  #incidents { display: flex; flex-direction: column; gap: 6px; }
+  .incident { text-align: left; line-height: 1.5; }
+  .state { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: #2a2f37; }
+  .state-awaiting_wearer { color: #f0b04a; }
+  .state-cancelled_by_wearer { color: #8fc58a; }
+  .state-alerted { color: #ff7a6e; }
+  #evidence { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  #evidence img { width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+  #evidence h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 0; }
+  #evidence ul { margin: 0; padding-left: 18px; }
+  .imu { width: 100%; height: 110px; background: #101317; border: 1px solid var(--line); border-radius: 6px; }
+  .source-inline { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .unavailable { padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); }
 </style>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
 </head>
@@ -34,15 +53,29 @@
     <h1>Vesti-Care Spatial</h1>
     <span class="tag">Authored home simulation. Locations come from the scenario.</span>
   </header>
-  <main id="view"></main>
+  <main id="view">
+    <div id="timeline" hidden>
+      <div class="row" style="justify-content:space-between"><span>Recording timeline</span><span id="timeline-label"></span></div>
+      <div class="bar"><div id="timeline-fill"></div><div id="timeline-ticks"></div></div>
+    </div>
+  </main>
   <aside>
+    <section>
+      <h2>Run</h2>
+      <div class="row">
+        <select id="scenario" aria-label="Scenario"></select>
+        <button id="start" type="button">Start</button>
+        <button id="stop" type="button" disabled>Stop</button>
+      </div>
+      <div id="run-status" class="source" role="status">No run selected.</div>
+    </section>
     <section>
       <h2>Glasses camera</h2>
       <div id="glasses"></div>
       <div class="row" style="margin-top:8px">
         <select id="glasses-preset" aria-label="Glasses camera preset"></select>
       </div>
-      <div class="source">Rendered frame from the authored home, not a recording.</div>
+      <div class="source">Live render of the authored home along the scenario route, not a recording.</div>
     </section>
     <section>
       <h2>View</h2>
@@ -51,6 +84,14 @@
         <label class="toggle"><input type="checkbox" id="hazards" checked /> Hazard zones</label>
         <button id="reset-view" type="button">Overview</button>
       </div>
+    </section>
+    <section>
+      <h2>Incidents</h2>
+      <div id="incidents"><span class="muted">No incidents.</span></div>
+    </section>
+    <section>
+      <h2>Evidence</h2>
+      <div id="evidence"><span class="muted">Select an incident marker or an incident above.</span></div>
     </section>
     <section>
       <h2>Selection</h2>

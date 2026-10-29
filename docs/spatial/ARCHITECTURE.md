@@ -151,7 +151,7 @@ Legacy ack route dùng cùng owner nghiệp vụ; không duy trì hai chính sá
 
 Mount `/spatial-assets/` cho home/scenario và `/evidence/` cho artifact refs được kiểm soát. Đăng ký API và mount trước static catch-all `/`. Không expose repo root hoặc backend environment.
 
-SSE báo thay đổi, REST snapshot giữ trạng thái chuẩn. Refresh và reconnect tải snapshot. P0 không có periodic snapshot reconciliation hoặc cam kết đồng bộ nhiều tab. Khi event/drop không phục hồi bằng reconnect, người demo có thể refresh; trạng thái đã commit vẫn còn.
+Trang `/spatial/` hỏi snapshot mỗi 500 ms khi run đang Running và dừng hỏi khi run đã kết thúc; nhân vật được nội suy theo đồng hồ của trình duyệt giữa hai lần hỏi. Cách này thay cho SSE trong P0: một tab demo, ít code hơn, và tự phục hồi sau refresh hoặc mất kết nối. Backend vẫn phát SSE hint cho client khác nếu cần. REST snapshot giữ trạng thái chuẩn. Refresh tải snapshot. P0 không có periodic snapshot reconciliation hoặc cam kết đồng bộ nhiều tab. Khi event/drop không phục hồi bằng reconnect, người demo có thể refresh; trạng thái đã commit vẫn còn.
 
 ## Điều đã cắt và nguồn kỹ thuật
 

@@ -24,6 +24,15 @@ Ngày 3 đã xong ngày 2026-10-29. Kết quả:
 - FPS đo được chỉ là headless với đồ họa phần mềm (khoảng 19); FPS trên máy demo đo ở Ngày 8.
 - Báo nhầm FALL được tách theo hoạt động (GATES.md): model báo nhầm cả khi đi bộ chậm, đi cầu thang chậm, nằm xuống và cúi người.
 
+Ngày 4 đã xong ngày 2026-10-29. Kết quả:
+
+- S1 và S2 có tuyến đường viết sẵn trong `scenario.json`; cú ngã S2 nằm ở zone `stairs_approach`.
+- `backend/tools/export_frames.py` xuất ảnh camera kính mỗi 500 ms theo tuyến đường (133 ảnh JPEG 640×480, khoảng 2 MB) cùng `frames.json` có pose và hash. Pose dùng chung `scene_context.pose_at` với backend.
+- `GET /api/spatial/incidents/{id}` trả vị trí (Authored location), ảnh gần nhất trong 250 ms hoặc Unavailable, IMU ±5 s cắt theo biên bản ghi, và action log. Snapshot có vị trí của từng incident.
+- `/spatial/` có Run (Start/Stop), nhân vật và camera kính đi theo tuyến đường, timeline có vạch incident, marker incident trên nhà và ngăn bằng chứng. Session id nằm trên URL nên refresh mở lại đúng run.
+- Flow `spatial_run.py` chạy trên instance cô lập: Start S2 bằng nút, mở incident bằng click lên marker 3D, ngăn bằng chứng hiện "Foot of the stairs", ảnh tại 24,00 s lệch 60 ms, trạng thái chuyển sang "Caregiver alerted" sau đếm ngược, refresh vẫn đúng run, Stop ghi `user_stop`. Ảnh ở `docs/spatial/evidence/day4/`.
+- Bộ test: 143 passed.
+
 ## Ngày 1 có gate bắt buộc
 
 ### G1. Model và ý nghĩa nhãn

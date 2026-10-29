@@ -46,6 +46,19 @@ SCENARIOS = {
         "title": "Evening walk toward the stairs, no fall",
         "notes": "Walking only. Candidates that included healthy stair climbing tripped the SVM >= 2.5 g rule; see detector_check.json.",
         "expect_incidents": 0,
+        # Authored route: [t_ms, eye x, eye y, eye z, look x, look y, look z] in home1 metres.
+        "route": [
+            [0, -3.0, 1.6, 2.0, -3.0, 1.4, -1.0],
+            [5000, -3.0, 1.6, -0.6, 0.0, 1.4, -0.6],
+            [12000, 1.0, 1.6, -0.6, 3.0, 1.4, -0.6],
+            [15000, 2.6, 1.6, -0.6, 2.4, 1.2, -3.0],
+            [19000, 2.0, 1.6, -2.6, 5.0, 1.2, -3.7],
+            [23000, 2.0, 1.6, -2.6, 5.0, 1.4, -3.7],
+            [26000, 2.6, 1.6, -0.6, 0.0, 1.4, -0.6],
+            [31000, 0.0, 1.6, -0.6, 2.6, 1.4, -0.6],
+            [34000, 2.6, 1.6, -0.6, 2.4, 1.2, -3.0],
+            [37760, 2.0, 1.6, -2.6, 5.0, 1.2, -3.7],
+        ],
         "candidates": [
             [("vestibular", "Participant_58_HS", "Walk"), ("vestibular", "Participant_58_HS", "Stairs"), ("vestibular", "Participant_44_HS", "Walk")],
             [("vestibular", "Participant_44_HS", "Walk"), ("vestibular", "Participant_44_HS", "Stairs"), ("vestibular", "Participant_58_HS", "Walk")],
@@ -56,6 +69,17 @@ SCENARIOS = {
         "title": "Walk, then a forward fall near the stairs",
         "notes": "SisFall F01: fall forward while walking, caused by a slip.",
         "expect_incidents": 1,
+        # The SisFall impact is at about 24 s; the wearer is at the foot of the stairs then and on the floor after.
+        "route": [
+            [0, 3.0, 1.6, 2.5, 3.0, 1.4, -1.0],
+            [6000, 3.0, 1.6, -0.6, -2.0, 1.4, -0.6],
+            [13000, -2.0, 1.6, -0.6, 2.6, 1.4, -0.6],
+            [19000, 2.6, 1.6, -0.6, 2.2, 1.2, -3.0],
+            [22500, 2.0, 1.6, -2.6, 5.0, 1.2, -3.7],
+            [23900, 2.0, 1.6, -3.1, 5.0, 1.2, -3.7],
+            [25000, 2.1, 0.35, -3.3, 3.2, 0.3, -3.7],
+            [28400, 2.1, 0.35, -3.3, 3.2, 0.3, -3.7],
+        ],
         "fall_segment": 1,
         "candidates": [
             [("vestibular", "Participant_58_HS", "Walk"), ("sisfall", "SA03", "F01_SA03_R01")],
@@ -139,6 +163,9 @@ def main():
             "duration_ms": len(imu) * 1000 // RATE_HZ,
             "pairing": "Scenario-paired: real recordings from different people and sensors spliced on one timeline.",
             "segments": segments,
+            "home": "home1",
+            "location": "Authored route; not measured from the IMU.",
+            "route": spec["route"],
         }, indent=2))
         print(f"{sid}: wrote candidate {n}, {len(imu)} samples")
 

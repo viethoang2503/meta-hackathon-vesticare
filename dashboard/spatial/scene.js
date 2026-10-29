@@ -309,3 +309,17 @@ export function addLights(scene) {
   sun.shadow.bias = -0.0005;
   scene.add(sun);
 }
+
+// Same interpolation as pose_at in backend/app/services/scene_context.py.
+export function poseAt(route, ms) {
+  let point;
+  if (ms <= route[0][0]) point = route[0].slice(1);
+  else if (ms >= route[route.length - 1][0]) point = route[route.length - 1].slice(1);
+  else {
+    const i = route.findIndex((p) => p[0] >= ms);
+    const a = route[i - 1], b = route[i];
+    const f = (ms - a[0]) / (b[0] - a[0]);
+    point = a.slice(1).map((v, k) => v + f * (b[k + 1] - v));
+  }
+  return { eye: point.slice(0, 3), look: point.slice(3) };
+}
