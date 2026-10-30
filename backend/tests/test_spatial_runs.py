@@ -256,10 +256,11 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertIn("0.05 s", a["reason"])
 
     def test_the_agent_explains_after_sam_with_its_tool_log_and_library_fixes(self):
-        [agent] = self.analyses_after_run(recorded_sam, kind="agent")
+        [agent] = self.analyses_after_run(recorded_sam, kind="agent", wearer_cancel_seconds=5)
         self.assertEqual((agent["status"], agent["model"]), ("Complete", "muse-spark-1.3"))
         self.assertEqual([c["tool"] for c in agent["tool_log"]["calls"]], ["get_event_context", "get_frame_analysis", "get_environment_fixes"])
         self.assertEqual(agent["tool_log"]["usage"], {"total_tokens": 700})
+        self.assertEqual(agent["tool_log"]["context"], {"incident_state": "awaiting_wearer"})
         self.assertEqual(json.loads(agent["output_text"])["recommendation_ids"], ["stairs_handrail_both_sides"])
 
     def test_incident_detail_resolves_the_chosen_fixes_from_the_library(self):
@@ -513,23 +514,6 @@ class SpatialRunsTest(unittest.TestCase):
             self.assertEqual((analysis.status, analysis.reason), ("Failed", "session_interrupted"))
         snap = session_snapshot("orphan", self.db)
         self.assertEqual((snap["status"], snap["end_reason"]), ("Interrupted", "session_interrupted"))
-
-    def test_fall_opens_an_incident_even_when_the_legacy_cooldown_suppresses_it(self):
-        scenario = load_scenario("S2")
-        legacy_key, monitor = "test:legacy-cooldown", StreamMonitor("test:spatial", fall_detection_service)
-        at_impact = None
-        try:
-            for ms, sample in zip(scenario.source_ms, scenario.samples):
-                legacy = fall_detection_service.add_sample(legacy_key, sample)
-                monitor.add_sample(int(ms), sample)
-                if int(ms) == S2_FALL_START_MS:
-                    at_impact = legacy
-        finally:
-            fall_detection_service.reset_patient(legacy_key)
-            monitor.close()
-        self.assertEqual(at_impact.state, "FALL")
-        self.assertTrue(at_impact.alert_suppressed, "the legacy cooldown, consumed by earlier windows, hides the impact")
-        self.assertEqual([i.source_start_ms for i in monitor.incidents], [S2_FALL_START_MS])
 
 
 class DecisionSourceTest(unittest.TestCase):

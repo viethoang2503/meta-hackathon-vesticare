@@ -203,3 +203,16 @@ Chạy `PYTHONPATH=. python ml/scripts/exp_context_conditioned.py`. Model nhận
 AUC chung theo cửa sổ là 0,59. AUC theo người (trung bình điểm mọi cửa sổ của một người, n=59) là 0,73. Hàm AUC ban đầu xử lý sai điểm bằng nhau; sau khi đổi sang hạng trung bình (`scipy.stats.rankdata`) và chạy lại, mọi số liệu trong bảng không đổi.
 
 Kết luận: biết hoạt động không giúp IMU tách bệnh nhân với người khỏe trên cầu thang (AUC 0,49). Các hoạt động đi bộ có tín hiệu vừa phải (0,66 đến 0,68), chưa đủ để cảnh báo theo từng cửa sổ 2 giây. Gộp theo người cho tín hiệu rõ hơn (0,73), phù hợp với điểm sàng lọc dáng đi qua nhiều phiên, không phù hợp cảnh báo tức thời. Bộ dữ liệu không có sự kiện suýt ngã, nên không mô hình nào ở đây học được "sắp ngã".
+
+## Simulator tổng hợp và route cảm biến cũ (Ngày 8, 2026-10-30)
+
+`backend/simulator/run_scenario.py` tạo tín hiệu tổng hợp với trọng lực trên trục z và rất ít nhiễu. Với model Keras, cả code trước khi chuyển route (commit `4c3371d`) lẫn sau khi chuyển đều trượt `normal` và `one_fall`:
+
+| Kịch bản | Trước khi chuyển (cooldown) | Sau khi chuyển (StreamMonitor) |
+|---|---|---|
+| normal (kỳ vọng 0) | 1 cảnh báo, 1,16 g | 1 cảnh báo, 1,15 g |
+| one_fall (kỳ vọng 1) | 2 cảnh báo, 1,16 g và 1,12 g; cú ngã 3,7 g không được báo | 1 cảnh báo mở ở 1,16 g; cú ngã 3,7 g gộp vào và cập nhật đỉnh của cảnh báo đó |
+| multi_fall | | PASS |
+| bad_payload | | PASS |
+
+Route mới chỉ báo khi có FALL đã xác nhận rồi nằm yên, nên không tạo cảnh báo nào mà route cũ không tạo. Nguyên nhân là model gặp tín hiệu tổng hợp lệch phân phối train (G1: model nhạy với hướng trục). Demo dùng bản ghi thật trong `assets/scenarios/`, không dùng simulator này.

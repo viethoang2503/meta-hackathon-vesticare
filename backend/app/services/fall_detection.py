@@ -6,7 +6,6 @@ Service xu ly fall detection trong backend:
 - giu buffer sensor data theo patient
 - chuan hoa window
 - infer state hien tai
-- ap dung cooldown cho alert FALL
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ import logging
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Deque, Hashable
 
 import time
@@ -49,7 +47,6 @@ from app.config import (
 )
 
 
-ALERT_COOLDOWN_SECONDS = max(10, WINDOW_SIZE // max(1, SAMPLING_RATE))
 
 
 @dataclass
@@ -60,8 +57,6 @@ class PredictionResult:
     fall_probability: float | None = None
     instability_probability: float | None = None
     peak_svm: float | None = None
-    alert_created: bool = False
-    alert_suppressed: bool = False
     model_source: str = "heuristic"
     inference_latency_ms: float | None = None
     active_threshold: float | None = None   # V.6: threshold thực tế được dùng
@@ -76,7 +71,6 @@ class FallDetectionService:
         self.buffers: dict[int, Deque[np.ndarray]] = defaultdict(
             lambda: deque(maxlen=WINDOW_SIZE)
         )
-        self.last_alert_at: dict[int, datetime] = {}
         self._fall_streak: dict[int, int] = defaultdict(int)
         self.scaler_mean, self.scaler_std = self._load_scaler()
         self.interpreter = self._load_tflite_interpreter()
@@ -165,7 +159,6 @@ class FallDetectionService:
         self,
         patient_id: Hashable,
         sample: np.ndarray,
-        event_time: datetime | None = None,
         fall_threshold: float | None = None,   # V.6: adaptive threshold
     ) -> PredictionResult:
         if sample.shape != (NUM_CHANNELS,):
@@ -205,14 +198,6 @@ class FallDetectionService:
         else:
             state = raw_state
 
-        alert_created = False
-        alert_suppressed = False
-        if state in ("FALL", "VESTIBULAR_INSTABILITY"):
-            alert_created, alert_suppressed = self._consume_alert_slot(
-                patient_id,
-                event_time or datetime.now(timezone.utc),
-            )
-
         return PredictionResult(
             state=state,
             window_ready=True,
@@ -220,8 +205,6 @@ class FallDetectionService:
             fall_probability=fall_probability,
             instability_probability=instability_probability,
             peak_svm=peak_svm,
-            alert_created=alert_created,
-            alert_suppressed=alert_suppressed,
             model_source=self.model_source,
             inference_latency_ms=inference_latency_ms,
             active_threshold=active_threshold,
@@ -318,67 +301,11 @@ class FallDetectionService:
         else:
             return float(output[0]), 0.0
 
-    def _consume_alert_slot(
-        self,
-        patient_id: int,
-        event_time: datetime,
-    ) -> tuple[bool, bool]:
-        previous = self.last_alert_at.get(patient_id)
-        if previous is not None:
-            if self._to_utc(event_time) - self._to_utc(previous) < timedelta(
-                seconds=ALERT_COOLDOWN_SECONDS
-            ):
-                return False, True
-
-        self.last_alert_at[patient_id] = self._to_utc(event_time)
-        return True, False
-
     def reset_patient(self, patient_id: Hashable) -> None:
-        """Forget everything this service remembers about one patient.
-
-        One call covering the sample buffer, the sustained-FALL streak and the
-        alert cooldown, so callers that need a clean slate cannot reset two of the
-        three. Test fixtures were clearing `buffers` and `last_alert_at` but not
-        `_fall_streak`, which is private and was added later -- streaks therefore
-        leaked between tests and made some of them pass on accumulated state
-        rather than on what they actually posted.
-        """
+        """Forget the sample buffer and the sustained-FALL streak of one stream, in one call."""
 
         self.buffers.pop(patient_id, None)
-        self.last_alert_at.pop(patient_id, None)
         self._fall_streak.pop(patient_id, None)
-
-    def rollback_last_samples(self, patient_id: int, count: int) -> None:
-        """Remove the last `count` samples from the patient's buffer.
-
-        Called when a DB commit fails so the in-memory buffer does not drift
-        ahead of what is actually persisted.
-        """
-        buf = self.buffers.get(patient_id)
-        if buf is None:
-            return
-        for _ in range(min(count, len(buf))):
-            buf.pop()
-        self._fall_streak[patient_id] = 0
-
-    def rollback_alert_slot(
-        self, patient_id: int, previous: datetime | None
-    ) -> None:
-        """Restore last_alert_at to the value it had before a failed commit.
-
-        Prevents the cooldown from being permanently consumed when no alert
-        row was actually written to the database.
-        """
-        if previous is None:
-            self.last_alert_at.pop(patient_id, None)
-        else:
-            self.last_alert_at[patient_id] = previous
-
-    @staticmethod
-    def _to_utc(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
 
 
 fall_detection_service = FallDetectionService()

@@ -22,7 +22,10 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app import database  # noqa: E402
-from app.config import FALL_CONFIRM_WINDOWS, WINDOW_SIZE  # noqa: E402
+from app.config import FALL_CONFIRM_WINDOWS, FALL_STILLNESS_SECONDS, SAMPLING_RATE, WINDOW_SIZE  # noqa: E402
+
+# A fall alerts once the wearer is still for FALL_STILLNESS_SECONDS after it (services/monitoring.py).
+STILLNESS_SAMPLES = int(FALL_STILLNESS_SECONDS * SAMPLING_RATE)
 from app.api.sensor import (  # noqa: E402
     BatchSensorReadingPayload,
     SensorBatchPayload,
@@ -31,6 +34,7 @@ from app.api.sensor import (  # noqa: E402
     ingest_sensor_data,
 )
 from app.services.fall_detection import fall_detection_service  # noqa: E402
+from app.api.sensor import reset_stream  # noqa: E402
 
 PATIENT_ID = 10  # Use a dedicated id to avoid colliding with alerts test
 
@@ -78,7 +82,7 @@ class SensorApiTestCase(unittest.TestCase):
         database.Base.metadata.drop_all(bind=self.engine)
         database.Base.metadata.create_all(bind=self.engine)
         # Reset fall detection service state for this patient
-        fall_detection_service.reset_patient(PATIENT_ID)
+        reset_stream(PATIENT_ID)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -110,8 +114,10 @@ class SensorApiTestCase(unittest.TestCase):
 
         self._fill(WINDOW_SIZE - 1)
         result = None
-        for _ in range(FALL_CONFIRM_WINDOWS):
+        for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES):
             result = self._ingest(**{**_FALL, **override})
+            if result["alert_created"]:
+                break
         return result
 
     # ------------------------------------------------------------------
@@ -301,6 +307,18 @@ class SensorApiTestCase(unittest.TestCase):
         self.assertFalse(second["alert_created"])
         self.assertTrue(second["alert_suppressed"])
 
+    def test_a_merged_fall_updates_the_open_alert_row(self):
+        from app.models.schemas import AlertEvent
+
+        self._confirm_fall()
+        self._ingest(**{**_FALL, "svm": 4.2})
+        db = self.SessionLocal()
+        try:
+            [alert] = db.query(AlertEvent).filter(AlertEvent.patient_id == PATIENT_ID).all()
+            self.assertAlmostEqual(alert.peak_svm, 4.2, places=4)
+        finally:
+            db.close()
+
     def test_only_one_alert_row_created_during_cooldown(self):
         from app.models.schemas import AlertEvent
 
@@ -350,7 +368,7 @@ class TelegramDispatchTestCase(unittest.TestCase):
     def setUp(self):
         database.Base.metadata.drop_all(bind=self.engine)
         database.Base.metadata.create_all(bind=self.engine)
-        fall_detection_service.reset_patient(self.PATIENT_ID)
+        reset_stream(self.PATIENT_ID)
 
     # Helpers ----------------------------------------------------------------
 
@@ -380,8 +398,10 @@ class TelegramDispatchTestCase(unittest.TestCase):
 
         self._fill(WINDOW_SIZE - 1)
         result = None
-        for _ in range(FALL_CONFIRM_WINDOWS):
+        for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES):
             result = self._ingest(**{**self._FALL, **override})
+            if result["alert_created"]:
+                break
         return result
 
     _FALL = dict(ax=2.0, ay=2.0, az=3.0, gx=0.0, gy=0.0, gz=0.0, svm=3.5)
@@ -421,7 +441,7 @@ class TelegramDispatchTestCase(unittest.TestCase):
             ax=2.0, ay=2.0, az=3.0, gx=0.0, gy=0.0, gz=0.0, svm=3.5
         )
         payload = SensorBatchPayload(
-            patient_id=self.PATIENT_ID, samples=[fall_sample] * FALL_CONFIRM_WINDOWS
+            patient_id=self.PATIENT_ID, samples=[fall_sample] * (FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES)
         )
 
         mock_tg = MagicMock(return_value=(True, None))

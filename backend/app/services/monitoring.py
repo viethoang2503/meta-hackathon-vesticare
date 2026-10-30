@@ -33,7 +33,7 @@ from app.config import (
     SAMPLING_RATE,
     SPATIAL_FALL_MERGE_SECONDS,
 )
-from app.services.fall_detection import FallDetectionService
+from app.services.fall_detection import FallDetectionService, PredictionResult
 
 FALL_MERGE_MS = SPATIAL_FALL_MERGE_SECONDS * 1000
 # Consecutive samples are 1000 / SAMPLING_RATE ms apart; a larger gap starts a new FALL burst.
@@ -63,6 +63,7 @@ class Incident:
     decision_source: str  # FallDetectionService.fall_decision_source of the opening window
     max_fall_probability: float
     peak_svm: float
+    opened_at_ms: int | None = None  # source time of the sample that opened it (stillness confirmed)
 
 
 @dataclass(frozen=True)
@@ -82,11 +83,13 @@ class StreamMonitor:
     incidents: list[Incident] = field(default_factory=list)
     rejected: list[Incident] = field(default_factory=list)
     state_counts: dict[str, int] = field(default_factory=dict)
+    last_prediction: PredictionResult | None = None
     _candidate: Incident | None = None
     _since_candidate: deque = field(default_factory=deque)
 
-    def add_sample(self, source_ms: int, sample: np.ndarray) -> IncidentEvent | None:
-        prediction = self.detector.add_sample(self.stream_key, sample)
+    def add_sample(self, source_ms: int, sample: np.ndarray, fall_threshold: float | None = None) -> IncidentEvent | None:
+        prediction = self.detector.add_sample(self.stream_key, sample, fall_threshold=fall_threshold)
+        self.last_prediction = prediction
         self.state_counts[prediction.state] = self.state_counts.get(prediction.state, 0) + 1
         is_fall = prediction.state == "FALL"
         fall_p = prediction.fall_probability or 0.0
@@ -111,7 +114,7 @@ class StreamMonitor:
             peak_svm=peak,
         )
         if self.stillness is None:
-            return self._open(draft)
+            return self._open(draft, source_ms)
         self._candidate = draft
         self._since_candidate = deque(maxlen=max(1, round(self.stillness.seconds * SAMPLING_RATE)))
         return None
@@ -134,14 +137,15 @@ class StreamMonitor:
         window = self._since_candidate
         if len(window) == window.maxlen and rule.is_still(np.asarray(window)):
             self._candidate = None
-            return self._open(draft)
+            return self._open(draft, source_ms)
         if source_ms - draft.source_end_ms > rule.window_seconds * 1000:
             self._candidate = None
             self.rejected.append(draft)
         return None
 
-    def _open(self, draft: Incident) -> IncidentEvent:
+    def _open(self, draft: Incident, source_ms: int) -> IncidentEvent:
         draft.index = len(self.incidents)
+        draft.opened_at_ms = source_ms
         self.incidents.append(draft)
         return IncidentEvent("opened", draft)
 

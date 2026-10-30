@@ -248,7 +248,8 @@ class SpatialRunManager:
                 due = min(total, int(elapsed * scenario.sample_rate_hz) + 1) if self._realtime else total
                 if due > cursor:
                     ingested = await asyncio.to_thread(
-                        self._ingest, lock, session_id, scenario, monitor, incident_rows, route_state, cursor, due
+                        self._ingest, lock, session_id, scenario, monitor, incident_rows, route_state, cursor, due,
+                        started if self._realtime else None,
                     )
                     if ingested is None:
                         return
@@ -276,8 +277,12 @@ class SpatialRunManager:
             self._locks.pop(session_id, None)
             self._stop_requested.pop(session_id, None)
 
-    def _ingest(self, lock, session_id, scenario, monitor, incident_rows, route_state, start, end):
-        """Runs in a worker thread. Returns (new incident ids, shown advisories), or None once the run has ended."""
+    def _ingest(self, lock, session_id, scenario, monitor, incident_rows, route_state, start, end, started=None):
+        """Runs in a worker thread. Returns (new incident ids, shown advisories), or None once the run has ended.
+
+        With `started` (the run's monotonic start, realtime runs only), an opened incident's latency_ms is
+        measured from when its opening sample was due at 1x to the commit that stores it.
+        """
         events = [monitor.add_sample(int(scenario.source_ms[j]), scenario.samples[j]) for j in range(start, end)]
         entries = self._zone_entries(scenario, route_state, start, end)
         with lock, self._db() as db:
@@ -327,6 +332,13 @@ class SpatialRunManager:
                     row.peak_svm = inc.peak_svm
             session.source_offset_ms = int(scenario.source_ms[end - 1])
             session.recording_ended = end >= len(scenario.samples)
+            if started is not None and opened:
+                db.flush()
+                committed_at = time.monotonic()
+                for event in events:
+                    if event is not None and event.kind == "opened":
+                        due_at = started + event.incident.opened_at_ms / 1000
+                        db.get(AlertEvent, incident_rows[event.incident.index]).latency_ms = round((committed_at - due_at) * 1000, 1)
             db.commit()
         _hint(session_id, "incident" if opened or entries else "progress")
         return opened, shown_advisories
@@ -528,7 +540,8 @@ class SpatialRunManager:
                 "status": result.status,
                 "reason": result.reason,
                 "output_text": json.dumps(result.result) if result.result is not None else None,
-                "tool_log": json.dumps({"calls": result.tool_log, "usage": result.usage, "rejected_answer": result.raw_answer}),
+                "tool_log": json.dumps({"calls": result.tool_log, "usage": result.usage, "rejected_answer": result.raw_answer,
+                                        "context": {"incident_state": bundle["incident"]["state"]}}),
             }
         except asyncio.TimeoutError:
             outcome = {"status": "TimedOut", "reason": f"no result within the {self._analysis_timeout} s analysis budget"}
@@ -747,6 +760,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                     "state": i.spatial_state,
                     "location": location_at(scenario_meta, i.source_start_ms),
                     "analysis_status": ",".join(analysis_statuses.get(i.id, [])) or None,
+                    "latency_ms": i.latency_ms,
                     "acknowledged_at": i.acknowledged_at,
                     "wearer_deadline_at": i.wearer_deadline_at,
                     "caregiver_deadline_at": i.caregiver_deadline_at,

@@ -31,9 +31,13 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import database  # noqa: E402
-from app.config import FALL_CONFIRM_WINDOWS, WINDOW_SIZE  # noqa: E402
+from app.config import FALL_CONFIRM_WINDOWS, FALL_STILLNESS_SECONDS, SAMPLING_RATE, WINDOW_SIZE  # noqa: E402
+
+# A fall alerts once the wearer is still for FALL_STILLNESS_SECONDS after it (services/monitoring.py).
+STILLNESS_SAMPLES = int(FALL_STILLNESS_SECONDS * SAMPLING_RATE)
 from app.models.schemas import AlertEvent  # noqa: E402
 from app.services.fall_detection import fall_detection_service  # noqa: E402
+from app.api.sensor import reset_stream  # noqa: E402
 
 PATIENT_ID = 20  # Dedicated ID — does not collide with function-level tests
 
@@ -98,7 +102,7 @@ class HttpTestCase(unittest.TestCase):
     def setUp(self):
         database.Base.metadata.drop_all(bind=self.engine)
         database.Base.metadata.create_all(bind=self.engine)
-        fall_detection_service.reset_patient(PATIENT_ID)
+        reset_stream(PATIENT_ID)
 
     def _confirm_fall(self):
         """Prime the window, then post enough FALL windows to clear confirmation.
@@ -111,8 +115,10 @@ class HttpTestCase(unittest.TestCase):
         for _ in range(WINDOW_SIZE - 1):
             self.client.post("/api/sensor/data", json=_NORMAL_PAYLOAD)
         response = None
-        for _ in range(FALL_CONFIRM_WINDOWS):
+        for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES):
             response = self.client.post("/api/sensor/data", json=_FALL_PAYLOAD)
+            if response.json()["alert_created"]:
+                break
         return response
 
     # ------------------------------------------------------------------

@@ -25,6 +25,7 @@ from app.database import get_db
 from app.models.schemas import AlertEvent, ForecastResult, SensorData
 from app.services.broadcaster import broadcaster
 from app.services.fall_detection import PredictionResult, fall_detection_service
+from app.services.monitoring import IncidentEvent, StreamMonitor
 from app.services.telegram_bot import send_fall_alert
 
 
@@ -175,33 +176,65 @@ def _store_sensor_sample(
     return record
 
 
+# One detector context per patient for the sensor routes. Alerts follow the same
+# rules as spatial replay (services/monitoring.py): only a confirmed FALL followed
+# by stillness opens one, INSTABILITY never does, and nearby falls merge into it.
+_streams: dict[int, StreamMonitor] = {}
+_alert_ids: dict[tuple[int, int], int] = {}  # (patient, incident index) -> alert row
+
+
+def _stream(patient_id: int) -> StreamMonitor:
+    if patient_id not in _streams:
+        _streams[patient_id] = StreamMonitor(stream_key=patient_id, detector=fall_detection_service)
+    return _streams[patient_id]
+
+
+def reset_stream(patient_id: int) -> None:
+    """Forget a patient's detector context and any pending fall candidate."""
+    for key in [k for k in _alert_ids if k[0] == patient_id]:
+        del _alert_ids[key]
+    monitor = _streams.pop(patient_id, None)
+    if monitor is not None:
+        monitor.close()
+    else:
+        fall_detection_service.reset_patient(patient_id)
+
+
+def _source_ms(timestamp: datetime) -> int:
+    return int(timestamp.timestamp() * 1000)
+
+
 def _create_alert_if_needed(
     db: Session,
     *,
     patient_id: int,
     event_time: datetime,
-    prediction: PredictionResult,
+    event: IncidentEvent | None,
     latency_ms: float | None = None,
 ) -> AlertEvent | None:
-    if not prediction.alert_created or prediction.state not in ("FALL", "VESTIBULAR_INSTABILITY"):
+    if event is None:
         return None
-
-    if prediction.state == "FALL":
-        confidence = prediction.fall_probability or 0.0
-    else:
-        confidence = prediction.instability_probability or 0.0
-
+    if event.kind == "extended":
+        row_id = _alert_ids.get((patient_id, event.incident.index))
+        row = db.get(AlertEvent, row_id) if row_id is not None else None
+        if row is not None:
+            row.confidence = event.incident.max_fall_probability
+            row.peak_svm = event.incident.peak_svm
+        return None
     alert = AlertEvent(
         patient_id=patient_id,
         timestamp=event_time,
-        alert_type=prediction.state,
-        confidence=confidence,
-        peak_svm=prediction.peak_svm or 0.0,
+        alert_type="FALL",
+        confidence=event.incident.max_fall_probability,
+        peak_svm=event.incident.peak_svm,
         is_acknowledged=False,
         latency_ms=latency_ms,
         notification_status="pending",
+        decision_source=event.incident.decision_source,
     )
     db.add(alert)
+    db.flush()
+    _alert_ids[(patient_id, event.incident.index)] = alert.id
     return alert
 
 
@@ -274,7 +307,7 @@ def _prediction_probabilities(prediction: PredictionResult) -> dict:
     }
 
 
-def _prediction_response(prediction: PredictionResult) -> dict:
+def _prediction_response(prediction: PredictionResult, event: IncidentEvent | None) -> dict:
     return {
         "status": "ok",
         "samples_buffered": prediction.samples_buffered,
@@ -283,8 +316,8 @@ def _prediction_response(prediction: PredictionResult) -> dict:
         "fall_probability": prediction.fall_probability,
         "instability_probability": prediction.instability_probability,
         "peak_svm": prediction.peak_svm,
-        "alert_created": prediction.alert_created,
-        "alert_suppressed": prediction.alert_suppressed,
+        "alert_created": event is not None and event.kind == "opened",
+        "alert_suppressed": event is not None and event.kind == "extended",
         "model_source": prediction.model_source,
         "active_threshold": prediction.active_threshold,   # V.6
     }
@@ -323,19 +356,14 @@ def ingest_sensor_data(
         svm=svm,
     )
 
-    # Capture state before mutation so we can rollback on DB failure.
-    _prev_alert_at = fall_detection_service.last_alert_at.get(payload.patient_id)
-
     # V.6: đọc adaptive threshold dựa theo forecast risk của bệnh nhân
     adaptive_threshold = _get_adaptive_threshold(db, payload.patient_id)
 
+    monitor = _stream(payload.patient_id)
     t_before_predict_ns = time.perf_counter_ns()
-    prediction = fall_detection_service.add_sample(
-        payload.patient_id,
-        sample_vector,
-        timestamp,
-        fall_threshold=adaptive_threshold,
-    )
+    event = monitor.add_sample(_source_ms(timestamp), sample_vector, fall_threshold=adaptive_threshold)
+    prediction = monitor.last_prediction
+    alert_opened = event is not None and event.kind == "opened"
     t_after_predict_ns = time.perf_counter_ns()
 
     logger.debug(
@@ -347,7 +375,7 @@ def ingest_sensor_data(
         prediction.instability_probability or 0.0,
         prediction.peak_svm or 0.0,
     )
-    if prediction.alert_created:
+    if alert_opened:
         logger.info(
             "ALERT patient_id=%d ts=%s state=%s fall_prob=%.3f instab_prob=%.3f peak_svm=%.3f",
             payload.patient_id,
@@ -358,18 +386,14 @@ def ingest_sensor_data(
             prediction.peak_svm or 0.0,
         )
 
-    latency_ms = (
-        (datetime.now(timezone.utc) - timestamp).total_seconds() * 1000
-        if prediction.alert_created
-        else None
-    )
+    latency_ms = (datetime.now(timezone.utc) - timestamp).total_seconds() * 1000 if alert_opened else None
 
     t_before_alert_ns = time.perf_counter_ns()
     alert = _create_alert_if_needed(
         db,
         patient_id=payload.patient_id,
         event_time=timestamp,
-        prediction=prediction,
+        event=event,
         latency_ms=latency_ms,
     )
     t_after_alert_ns = time.perf_counter_ns()
@@ -377,10 +401,8 @@ def ingest_sensor_data(
     try:
         db.commit()
     except Exception:
-        # Keep in-memory state consistent with DB: undo buffer append and cooldown.
-        fall_detection_service.rollback_last_samples(payload.patient_id, 1)
-        if prediction.alert_created:
-            fall_detection_service.rollback_alert_slot(payload.patient_id, _prev_alert_at)
+        # Best effort: drop the patient's detector context rather than keep it ahead of the database.
+        reset_stream(payload.patient_id)
         db.rollback()
         raise
 
@@ -390,7 +412,7 @@ def ingest_sensor_data(
         sent, err = send_fall_alert(
             alert_id=alert.id,
             patient_id=payload.patient_id,
-            alert_type=prediction.state,
+            alert_type=alert.alert_type,
             confidence=alert.confidence or 0.0,
             peak_svm=prediction.peak_svm or 0.0,
             timestamp=timestamp,
@@ -398,7 +420,7 @@ def ingest_sensor_data(
         t_after_telegram_ns = time.perf_counter_ns()
         _record_notification_result(db, alert, sent, err)
 
-    response = _prediction_response(prediction)
+    response = _prediction_response(prediction, event)
     response["alert_id"] = alert.id if alert is not None else None
 
     if prediction.window_ready:
@@ -434,7 +456,7 @@ def ingest_sensor_data(
         **_prediction_probabilities(prediction),
         "samples_buffered": prediction.samples_buffered,
         "window_ready": prediction.window_ready,
-        "alert_created": prediction.alert_created,
+        "alert_created": alert_opened,
         "alert_id": alert.id if alert is not None else None,
         "timestamp": timestamp.isoformat(),
     })
@@ -455,12 +477,9 @@ def ingest_sensor_batch(
         model_source=fall_detection_service.model_source,
     )
     created_alert_ids: list[int] = []
+    last_event: IncidentEvent | None = None
     stored_samples = 0
     event_samples: list[dict] = []
-
-    # Capture alert-slot state before the loop so we can rollback the entire
-    # batch atomically if the final commit fails.
-    _prev_alert_at = fall_detection_service.last_alert_at.get(payload.patient_id)
 
     # V.6: đọc adaptive threshold 1 lần cho cả batch
     adaptive_threshold = _get_adaptive_threshold(db, payload.patient_id)
@@ -512,20 +531,18 @@ def ingest_sensor_batch(
             gz=sample.gz,
             svm=svm,
         )
-        prediction = fall_detection_service.add_sample(
-            payload.patient_id,
-            sample_vector,
-            timestamp,
-            fall_threshold=adaptive_threshold,
-        )
+        monitor = _stream(payload.patient_id)
+        event = monitor.add_sample(_source_ms(timestamp), sample_vector, fall_threshold=adaptive_threshold)
+        prediction = monitor.last_prediction
+        last_event = event
         alert = _create_alert_if_needed(
             db,
             patient_id=payload.patient_id,
             event_time=timestamp,
-            prediction=prediction,
+            event=event,
             latency_ms=(
                 (datetime.now(timezone.utc) - timestamp).total_seconds() * 1000
-                if prediction.alert_created
+                if event is not None and event.kind == "opened"
                 else None
             ),
         )
@@ -554,8 +571,8 @@ def ingest_sensor_batch(
     try:
         db.commit()
     except Exception:
-        fall_detection_service.rollback_last_samples(payload.patient_id, stored_samples)
-        fall_detection_service.rollback_alert_slot(payload.patient_id, _prev_alert_at)
+        # Best effort: drop the patient's detector context rather than keep it ahead of the database.
+        reset_stream(payload.patient_id)
         db.rollback()
         raise
 
@@ -588,7 +605,8 @@ def ingest_sensor_batch(
         "timestamp": timestamp.isoformat(),
     })
 
-    response = _prediction_response(prediction)
+    response = _prediction_response(prediction, last_event)
+    response["alert_created"] = len(created_alert_ids) > 0
     response["stored_samples"] = stored_samples
     response["created_alert_ids"] = created_alert_ids
     return response

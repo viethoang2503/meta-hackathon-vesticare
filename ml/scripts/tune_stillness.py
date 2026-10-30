@@ -76,7 +76,7 @@ class Replay:
     def __init__(self, predictions: list[PredictionResult]):
         self._it = iter(predictions)
 
-    def add_sample(self, _key, _sample):
+    def add_sample(self, _key, _sample, **_threshold):
         return next(self._it)
 
     def reset_patient(self, _key):

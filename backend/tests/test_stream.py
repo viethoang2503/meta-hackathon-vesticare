@@ -21,7 +21,10 @@ BACKEND_ROOT = PROJECT_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.config import FALL_CONFIRM_WINDOWS, WINDOW_SIZE  # noqa: E402
+from app.config import FALL_CONFIRM_WINDOWS, FALL_STILLNESS_SECONDS, SAMPLING_RATE, WINDOW_SIZE  # noqa: E402
+
+# A fall alerts once the wearer is still for FALL_STILLNESS_SECONDS after it (services/monitoring.py).
+STILLNESS_SAMPLES = int(FALL_STILLNESS_SECONDS * SAMPLING_RATE)
 from app.services.broadcaster import SSEBroadcaster  # noqa: E402
 from conftest import registered_route_paths  # noqa: E402
 
@@ -178,8 +181,8 @@ class SensorIngestPublishTest(unittest.TestCase):
     def setUp(self):
         self.database.Base.metadata.drop_all(bind=self.engine)
         self.database.Base.metadata.create_all(bind=self.engine)
-        from app.services.fall_detection import fall_detection_service
-        fall_detection_service.reset_patient(self.PATIENT_ID)
+        from app.api.sensor import reset_stream
+        reset_stream(self.PATIENT_ID)
 
     def _ingest(self, published_list, **overrides):
         from app.api.sensor import SensorReadingPayload, ingest_sensor_data
@@ -314,7 +317,7 @@ class SensorIngestPublishTest(unittest.TestCase):
             svm=3.5,
         )
         fall_published = []
-        for _ in range(FALL_CONFIRM_WINDOWS):
+        for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES):
             fall_published = []
             with patch("app.api.sensor.broadcaster") as mock_bc:
                 mock_bc.publish.side_effect = fall_published.append
@@ -323,6 +326,8 @@ class SensorIngestPublishTest(unittest.TestCase):
                     ingest_sensor_data(payload=payload, db=db)
                 finally:
                     db.close()
+            if fall_published and fall_published[0]["alert_created"]:
+                break
 
         self.assertEqual(len(fall_published), 1)
         event = fall_published[0]
@@ -368,8 +373,8 @@ class BatchIngestPublishTest(unittest.TestCase):
     def setUp(self):
         self.database.Base.metadata.drop_all(bind=self.engine)
         self.database.Base.metadata.create_all(bind=self.engine)
-        from app.services.fall_detection import fall_detection_service
-        fall_detection_service.reset_patient(self.PATIENT_ID)
+        from app.api.sensor import reset_stream
+        reset_stream(self.PATIENT_ID)
 
     def _batch(self, samples_data, published_list):
         from app.api.sensor import BatchSensorReadingPayload, SensorBatchPayload, ingest_sensor_batch
@@ -414,7 +419,7 @@ class BatchIngestPublishTest(unittest.TestCase):
         # in the same batch -- one fall sample is a single FALL window, which
         # sustained confirmation deliberately downgrades.
         samples = [self._normal_sample() for _ in range(WINDOW_SIZE - 1)] + [
-            self._fall_sample() for _ in range(FALL_CONFIRM_WINDOWS)
+            self._fall_sample() for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES)
         ]
         self._batch(samples, published)
         self.assertEqual(len(published), 1)

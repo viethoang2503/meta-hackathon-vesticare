@@ -51,6 +51,7 @@ class IncidentOut(BaseModel):
     state: str | None
     location: LocationOut
     analysis_status: str | None
+    latency_ms: float | None
     acknowledged_at: datetime | None
     wearer_deadline_at: datetime | None
     caregiver_deadline_at: datetime | None

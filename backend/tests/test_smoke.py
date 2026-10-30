@@ -28,8 +28,12 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 from app import database as db_module  # noqa: E402
-from app.config import FALL_CONFIRM_WINDOWS, WINDOW_SIZE  # noqa: E402
+from app.config import FALL_CONFIRM_WINDOWS, FALL_STILLNESS_SECONDS, SAMPLING_RATE, WINDOW_SIZE  # noqa: E402
+
+# A fall alerts once the wearer is still for FALL_STILLNESS_SECONDS after it (services/monitoring.py).
+STILLNESS_SAMPLES = int(FALL_STILLNESS_SECONDS * SAMPLING_RATE)
 from app.services.fall_detection import fall_detection_service  # noqa: E402
+from app.api.sensor import reset_stream  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +66,7 @@ def client(test_db):
     engine, SessionLocal = test_db
     db_module.Base.metadata.drop_all(bind=engine)
     db_module.Base.metadata.create_all(bind=engine)
-    fall_detection_service.reset_patient(SMOKE_PATIENT_ID)
+    reset_stream(SMOKE_PATIENT_ID)
 
     from app.main import app
     with TestClient(app, raise_server_exceptions=True) as c:
@@ -110,9 +114,11 @@ def _post_confirmed_fall(client):
 
     _fill(client, WINDOW_SIZE - 1)
     resp = None
-    for _ in range(FALL_CONFIRM_WINDOWS):
+    for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES):
         resp = client.post("/api/sensor/data", json=_FALL_SAMPLE)
         assert resp.status_code == 200, f"sensor/data failed: {resp.text}"
+        if resp.json()["alert_created"]:
+            break
     return resp
 
 
@@ -261,7 +267,7 @@ def test_batch_ingest_creates_alert(client):
             "patient_id": SMOKE_PATIENT_ID,
             "samples": [
                 dict(ax=2.0, ay=2.0, az=3.0, gx=0.0, gy=0.0, gz=0.0, svm=3.5)
-                for _ in range(FALL_CONFIRM_WINDOWS)
+                for _ in range(FALL_CONFIRM_WINDOWS + STILLNESS_SAMPLES)
             ],
         }
         resp = client.post("/api/sensor/batch", json=batch_payload)
@@ -320,4 +326,11 @@ def test_sustained_confirmation_only_delays_a_one_sample_spike(client):
 
     assert states[: FALL_CONFIRM_WINDOWS - 1] == ["NORMAL"] * (FALL_CONFIRM_WINDOWS - 1)
     assert states[FALL_CONFIRM_WINDOWS - 1] == "FALL"
+    mock_tg.assert_not_called()
+
+    # A spike followed by stillness is what an impact and then lying still look like,
+    # so the stillness rule raises it once the still span has passed.
+    with patch("app.api.sensor.send_fall_alert", mock_tg):
+        for _ in range(STILLNESS_SAMPLES):
+            client.post("/api/sensor/data", json=_NORMAL_SAMPLE)
     mock_tg.assert_called_once()
