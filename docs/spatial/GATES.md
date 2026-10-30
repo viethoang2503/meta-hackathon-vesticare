@@ -156,6 +156,10 @@ Chạy bằng `curl` tới `https://api.meta.ai/v1`, key lấy từ `MODEL_API_K
 
 Chưa kiểm tra: gửi kết quả tool trở lại cho lượt thứ hai, output JSON theo schema của AnalysisRun, hành vi khi tool trả lỗi, và timeout. Các phần này làm ở Ngày 6 (AC05, AC11).
 
+### Ngày 6: vòng tool đầy đủ
+
+Trên run S2 thật, `muse-spark-1.3` gọi 4 tool qua nhiều lượt, nhận kết quả tool và trả JSON theo schema. Lần đầu bị cắt vì `finish_reason = length` với `max_tokens = 1200`; với 4000 thì Complete sau 14,2 s và mọi evidence id lẫn fix id đều qua kiểm tra. Lỗi API, timeout, câu trả lời không phải JSON, trích dẫn bằng chứng không có và gợi ý ngoài thư viện đều có test với câu trả lời giả.
+
 ## Thí nghiệm C. Model bất ổn train chỉ trên bộ vestibular
 
 Chạy `PYTHONPATH=. python ml/scripts/exp_instability_within_vestibular.py`. Model CNN 1D nhỏ, 2 lớp, nhãn proxy từ `get_activity_label`: NORMAL là mọi hoạt động của HS cùng các hoạt động dễ của BV/UV, INSTABILITY là hoạt động khó của BV/UV. Có 26.404 cửa sổ từ 59 người. Đánh giá bằng kiểm tra chéo 5 phần theo người: mỗi người được chấm bởi model chưa từng thấy họ, và mỗi phần đều có HS, BV, UV.

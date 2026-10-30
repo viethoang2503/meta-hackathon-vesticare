@@ -134,3 +134,10 @@ MODEL_API_BASE = "https://api.meta.ai/v1"
 MODEL_API_KEY = os.getenv("MODEL_API_KEY", "")
 SAM_MODEL = "sam-3.1"
 ANALYSIS_TIMEOUT_SECONDS = 45
+
+# Agent giai thich incident (docs/spatial/SPEC.md: max_tool_calls, analysis_timeout_seconds)
+AGENT_MODEL = "muse-spark-1.3"
+AGENT_MAX_TOOL_CALLS = 5
+# Reasoning tokens count against this; 1200 cut the final JSON short on the first real run.
+AGENT_MAX_TOKENS = 4000
+FIXES_LIBRARY_PATH = PROJECT_ROOT / "assets" / "fixes" / "library.json"

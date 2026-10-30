@@ -6,6 +6,7 @@ seconds instead of the scenario's wall-clock length.
 """
 
 import asyncio
+import json
 import sys
 import tempfile
 import threading
@@ -27,6 +28,7 @@ from app.database import Base  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import schemas  # noqa: E402,F401
 from app.models.schemas import SpatialAnalysis, SpatialSession  # noqa: E402
+from app.services.muse_client import AgentError  # noqa: E402
 from app.services.sam_client import BOX, SamError, SamResult  # noqa: E402
 from app.services.fall_detection import FallDetectionService, fall_detection_service  # noqa: E402
 from app.services.monitoring import StreamMonitor  # noqa: E402
@@ -48,6 +50,25 @@ def recorded_sam(image, mime, prompt):
     """A real SAM 3.1 answer recorded on day 3 (one stairs mask); no network in tests."""
     boxes = [dict(zip(("x1", "y1", "x2", "y2", "w", "h"), map(int, m))) for m in BOX.findall(SAM_OUTPUT)]
     return SamResult(SAM_OUTPUT, boxes, 2300, "sam-3.1")
+
+
+def scripted_agent(messages, tools, tool_choice, timeout):
+    """Muse Spark stand-in: gathers evidence on the first turn, answers citing it on the second."""
+    incident_id = int(messages[1]["content"].split("incident ")[1].split(" ")[0])
+    if messages[-1]["role"] == "user":
+        calls = [("get_event_context", {"incident_id": incident_id}), ("get_frame_analysis", {"incident_id": incident_id}),
+                 ("get_environment_fixes", {"hazard": "stairs"})]
+        return {"message": {"content": "", "tool_calls": [
+            {"id": f"c{n}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+            for n, (name, args) in enumerate(calls)]}, "usage": {"total_tokens": 400}}
+    answer = {
+        "summary": "A fall was detected at the foot of the stairs in the simulated home.",
+        "observations": [{"text": "High impact then stillness.", "evidence_ids": [f"imu:{incident_id}"]},
+                         {"text": "Stairs are in the rendered frame.", "evidence_ids": ["frame:S2-024000"]}],
+        "uncertainties": ["Why the person fell is not visible in this evidence."],
+        "recommendation_ids": ["stairs_handrail_both_sides"],
+    }
+    return {"message": {"content": json.dumps(answer), "tool_calls": None}, "usage": {"total_tokens": 300}}
 
 
 class PausedAfterStatusRead(OrmSession):
@@ -79,7 +100,7 @@ class SpatialRunsTest(unittest.TestCase):
     def manager(self, **kwargs):
         return SpatialRunManager(
             session_factory=self.db,
-            **{"realtime": False, "run_timeout_seconds": 0.5, "wearer_cancel_seconds": 0.2, "segmenter": recorded_sam, **kwargs},
+            **{"realtime": False, "run_timeout_seconds": 0.5, "wearer_cancel_seconds": 0.2, "segmenter": recorded_sam, "chat": scripted_agent, **kwargs},
         )
 
     async def wait_for_incident(self, sid):
@@ -128,15 +149,15 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertEqual(detail["imu"]["source"], "Scenario-paired recording")
         self.assertEqual(snap["incidents"][0]["location"]["zone_label"], "Foot of the stairs")
 
-    def analyses_after_run(self, segmenter, **kwargs):
+    def analyses_after_run(self, segmenter, kind="sam", **kwargs):
         async def go():
             m = self.manager(run_timeout_seconds=60, segmenter=segmenter, **kwargs)
             sid = await m.start("S2")
             incident_id = await self.wait_for_incident(sid)
-            while not [a for a in incident_detail(incident_id, self.db)["analyses"] if a["status"] != "Running"]:
+            while not [a for a in incident_detail(incident_id, self.db)["analyses"] if a["kind"] == kind and a["status"] != "Running"]:
                 await asyncio.sleep(0.05)
             await m.stop(sid)
-            return incident_detail(incident_id, self.db)["analyses"]
+            return [a for a in incident_detail(incident_id, self.db)["analyses"] if a["kind"] == kind]
         return asyncio.run(go())
 
     def test_sam_analyses_the_frame_of_the_fall_with_the_zone_prompt(self):
@@ -205,7 +226,7 @@ class SpatialRunsTest(unittest.TestCase):
                 return ended
 
         async def go():
-            m = SlowStop(session_factory=self.db, realtime=False, run_timeout_seconds=60, segmenter=recorded_sam)
+            m = SlowStop(session_factory=self.db, realtime=False, run_timeout_seconds=60, segmenter=recorded_sam, chat=scripted_agent)
             sid = await m.start("S1")
             await m.stop(sid)
             return sid
@@ -227,6 +248,51 @@ class SpatialRunsTest(unittest.TestCase):
         [a] = self.analyses_after_run(slow, analysis_timeout_seconds=0.05)
         self.assertEqual((a["status"], a["output_text"]), ("TimedOut", None))
         self.assertIn("0.05 s", a["reason"])
+
+    def test_the_agent_explains_after_sam_with_its_tool_log_and_library_fixes(self):
+        [agent] = self.analyses_after_run(recorded_sam, kind="agent")
+        self.assertEqual((agent["status"], agent["model"]), ("Complete", "muse-spark-1.3"))
+        self.assertEqual([c["tool"] for c in agent["tool_log"]["calls"]], ["get_event_context", "get_frame_analysis", "get_environment_fixes"])
+        self.assertEqual(agent["tool_log"]["usage"], {"total_tokens": 700})
+        self.assertEqual(json.loads(agent["output_text"])["recommendation_ids"], ["stairs_handrail_both_sides"])
+
+    def test_incident_detail_resolves_the_chosen_fixes_from_the_library(self):
+        async def go():
+            m = self.manager(run_timeout_seconds=60)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            while not [a for a in incident_detail(incident_id, self.db)["analyses"] if a["kind"] == "agent" and a["status"] != "Running"]:
+                await asyncio.sleep(0.05)
+            await m.stop(sid)
+            return incident_detail(incident_id, self.db)
+        detail = asyncio.run(go())
+        self.assertEqual([r["title"] for r in detail["recommendations"]], ["Handrails on both sides of the stairs"])
+
+    def test_an_agent_failure_is_recorded_and_the_caregiver_is_still_alerted(self):
+        def down(messages, tools, tool_choice, timeout):
+            raise AgentError("Failed", "HTTP 503: unavailable")
+        [agent] = self.analyses_after_run(recorded_sam, kind="agent", chat=down)
+        self.assertEqual((agent["status"], agent["reason"], agent["output_text"]), ("Failed", "HTTP 503: unavailable", None))
+
+    def test_stop_cancels_a_running_agent(self):
+        release = threading.Event()
+
+        def slow_chat(messages, tools, tool_choice, timeout):
+            release.wait(10)
+            return scripted_agent(messages, tools, tool_choice, timeout)
+
+        async def go():
+            m = self.manager(run_timeout_seconds=60, chat=slow_chat)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            while not [a for a in incident_detail(incident_id, self.db)["analyses"] if a["kind"] == "agent"]:
+                await asyncio.sleep(0.05)
+            await m.stop(sid)
+            release.set()
+            await m.wait(sid)
+            return [a for a in incident_detail(incident_id, self.db)["analyses"] if a["kind"] == "agent"]
+        [agent] = asyncio.run(go())
+        self.assertEqual((agent["status"], agent["reason"]), ("Cancelled", "user_stop"))
 
     def test_s1_walk_produces_no_incident(self):
         snap = self.run_to_end("S1")
@@ -332,7 +398,7 @@ class SpatialRunsTest(unittest.TestCase):
         db = sessionmaker(bind=self.engine, class_=PausedAfterStatusRead, autocommit=False, autoflush=False)
 
         async def go():
-            m = SpatialRunManager(session_factory=db, realtime=False, run_timeout_seconds=60, segmenter=recorded_sam)
+            m = SpatialRunManager(session_factory=db, realtime=False, run_timeout_seconds=60, segmenter=recorded_sam, chat=scripted_agent)
             sid = await m.start("S2")
             self.assertTrue(await asyncio.to_thread(gate["reached"].wait, 60), "ingest never read the session")
             stopping = asyncio.create_task(m.stop(sid))

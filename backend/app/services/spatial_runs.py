@@ -11,8 +11,9 @@ WEARER_CANCEL_WINDOW_SECONDS. "I'm OK" in time makes it cancelled_by_wearer and
 nobody is notified; silence makes it alerted and contact_1 is notified. "I'm OK"
 after that is recorded but does not cancel anything.
 
-Each incident also gets a SAM analysis of the glasses frame at its start,
-run in the background so a slow or failing API never delays the countdown.
+Each incident also gets a SAM analysis of the glasses frame at its start and
+then a Muse Spark explanation (services/incident_agent.py), both in the
+background so a slow or failing API never delays the countdown.
 Ending a run settles unfinished analyses: Stop -> Cancelled, run timeout ->
 TimedOut, restart -> Failed; a late API answer does not overwrite that.
 
@@ -30,6 +31,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,7 +40,10 @@ import numpy as np
 from sqlalchemy.exc import IntegrityError
 
 from app.config import (
+    AGENT_MAX_TOOL_CALLS,
+    AGENT_MODEL,
     ANALYSIS_TIMEOUT_SECONDS,
+    FIXES_LIBRARY_PATH,
     IMU_DETAIL_MAX_SECONDS,
     SCENARIOS_DIR,
     SPATIAL_RUN_TIMEOUT_SECONDS,
@@ -48,7 +53,8 @@ from app import database
 from app.models.schemas import AlertEvent, SpatialAction, SpatialAnalysis, SpatialSession
 from app.services.broadcaster import broadcaster
 from app.services.fall_detection import FallDetectionService, fall_detection_service
-from app.services import sam_client
+from app.services import muse_client, sam_client
+from app.services.incident_agent import run_agent
 from app.services.monitoring import StreamMonitor
 from app.services.scene_context import frame_near, home_manifest, location_at
 
@@ -121,6 +127,7 @@ class SpatialRunManager:
         session_factory=None,
         detector: FallDetectionService = fall_detection_service,
         segmenter=None,
+        chat=None,
         analysis_timeout_seconds: float = ANALYSIS_TIMEOUT_SECONDS,
     ) -> None:
         self._realtime = realtime
@@ -129,6 +136,7 @@ class SpatialRunManager:
         self._session_factory = session_factory
         self._detector = detector
         self._segment = segmenter or sam_client.segment
+        self._chat = chat or muse_client.chat
         self._analysis_timeout = analysis_timeout_seconds
         self._runs: dict[str, asyncio.Task] = {}
         self._locks: dict[str, threading.Lock] = {}
@@ -330,6 +338,8 @@ class SpatialRunManager:
             logger.exception("could not open the SAM analysis for incident %s", incident_id)
             return
         if request is None:
+            if analysis_id is not None:
+                await self._explain(session_id, lock, scenario, incident_id)
             return
         try:
             # The budget covers the whole call; the worker thread may finish later, and
@@ -350,6 +360,63 @@ class SpatialRunManager:
             logger.exception("SAM analysis %s failed", analysis_id)
             outcome = {"status": "Failed", "reason": f"{type(err).__name__}"}
         await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
+        await self._explain(session_id, lock, scenario, incident_id)
+
+    async def _explain(self, session_id: str, lock: threading.Lock, scenario: Scenario, incident_id: int) -> None:
+        try:
+            analysis_id, bundle = await asyncio.to_thread(self._open_explanation, lock, session_id, scenario, incident_id)
+        except Exception:
+            logger.exception("could not open the agent analysis for incident %s", incident_id)
+            return
+        if bundle is None:
+            return
+        started = time.perf_counter()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(run_agent, bundle, self._chat, max_tool_calls=AGENT_MAX_TOOL_CALLS,
+                                  timeout_seconds=self._analysis_timeout),
+                self._analysis_timeout,
+            )
+            outcome = {
+                "status": result.status,
+                "reason": result.reason,
+                "output_text": json.dumps(result.result) if result.result is not None else None,
+                "tool_log": json.dumps({"calls": result.tool_log, "usage": result.usage, "rejected_answer": result.raw_answer}),
+            }
+        except asyncio.TimeoutError:
+            outcome = {"status": "TimedOut", "reason": f"no result within the {self._analysis_timeout} s analysis budget"}
+        except Exception as err:
+            logger.exception("agent analysis %s failed", analysis_id)
+            outcome = {"status": "Failed", "reason": type(err).__name__}
+        outcome["duration_ms"] = round((time.perf_counter() - started) * 1000)
+        await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
+
+    def _open_explanation(self, lock, session_id, scenario, incident_id):
+        """Records the agent analysis and returns (id, evidence bundle), or (None, None) once the run has ended."""
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            if session is None or session.status != "Running":
+                return None, None
+            row = db.get(AlertEvent, incident_id)
+            sam = (
+                db.query(SpatialAnalysis)
+                .filter(SpatialAnalysis.incident_id == incident_id, SpatialAnalysis.kind == "sam")
+                .order_by(SpatialAnalysis.id.desc())
+                .first()
+            )
+            others = (
+                db.query(AlertEvent)
+                .filter(AlertEvent.session_id == session_id, AlertEvent.id != incident_id)
+                .all()
+            )
+            bundle = _evidence_bundle(scenario, row, sam, others)
+            analysis = SpatialAnalysis(session_id=session_id, incident_id=incident_id, kind="agent",
+                                       status="Running", model=AGENT_MODEL, created_at=_utcnow())
+            db.add(analysis)
+            db.commit()
+            analysis_id = analysis.id
+        _hint(session_id, "analysis")
+        return analysis_id, bundle
 
     def _open_analysis(self, lock, session_id, scenario, incident_id):
         """Records the analysis and returns (id, segment args), or (id, None) when there is nothing to send."""
@@ -435,6 +502,37 @@ class SpatialRunManager:
         return {"incident_id": incident_id, "applied": True, "incident_state": state, "reason": None}
 
 
+def _fixes_library() -> list[dict]:
+    return json.loads(FIXES_LIBRARY_PATH.read_text())["fixes"]
+
+
+def _evidence_bundle(scenario: Scenario, row, sam, others) -> dict:
+    """What the agent's tools may read: stored evidence only, nothing it has to trust from itself."""
+    window = (scenario.source_ms >= row.source_start_ms - 1000) & (scenario.source_ms <= row.source_start_ms + 5000)
+    samples = scenario.samples[window]
+    tail = samples[-100:]
+    sam_json = _analysis_json(sam) if sam else None
+    if sam_json and sam_json["boxes"]:
+        b = sam_json["boxes"][0]
+        sam_json["box_area_fraction"] = round((b["x2"] - b["x1"]) * (b["y2"] - b["y1"]) / (b["w"] * b["h"]), 3)
+    return {
+        "incident": {"id": row.id, "source_start_ms": row.source_start_ms, "state": row.spatial_state,
+                     "decision_source": row.decision_source, "fall_probability": row.confidence},
+        "location": location_at(scenario.meta, row.source_start_ms),
+        "imu_summary": {
+            "window_s": [round((row.source_start_ms - 1000) / 1000, 2), round((row.source_start_ms + 5000) / 1000, 2)],
+            "peak_svm_g": round(float(samples[:, 6].max()), 2),
+            "peak_gyro_deg_s": round(float(np.linalg.norm(samples[:, 3:6], axis=1).max()), 1),
+            "svm_std_last_2s_g": round(float(tail[:, 6].std()), 3),
+        },
+        "frame": frame_near(scenario.id, row.source_start_ms),
+        "sam": sam_json,
+        "recent": [{"id": o.id, "source_start_ms": o.source_start_ms,
+                    "zone_id": location_at(scenario.meta, o.source_start_ms)["zone_id"]} for o in others],
+        "fixes": _fixes_library(),
+    }
+
+
 def _read_frame(path) -> bytes:
     return path.read_bytes()
 
@@ -451,6 +549,7 @@ def _analysis_json(a) -> dict:
         "id": a.id, "kind": a.kind, "status": a.status, "reason": a.reason, "prompt": a.prompt,
         "frame_id": a.frame_id, "model": a.model, "duration_ms": a.duration_ms,
         "boxes": json.loads(a.boxes) if a.boxes else [], "output_text": a.output_text,
+        "tool_log": json.loads(a.tool_log) if a.tool_log else None,
         "created_at": a.created_at, "finished_at": a.finished_at,
     }
 
@@ -469,10 +568,9 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
         if s is None:
             return None
         scenario_meta = load_scenario(s.scenario_id).meta
-        sam_status = {
-            a.incident_id: a.status
-            for a in db.query(SpatialAnalysis).filter(SpatialAnalysis.session_id == session_id).order_by(SpatialAnalysis.id)
-        }
+        analysis_statuses: dict[int, list[str]] = {}
+        for a in db.query(SpatialAnalysis).filter(SpatialAnalysis.session_id == session_id).order_by(SpatialAnalysis.id):
+            analysis_statuses.setdefault(a.incident_id, []).append(a.status)
         incidents = (
             db.query(AlertEvent)
             .filter(AlertEvent.session_id == session_id)
@@ -509,7 +607,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                     "notification_status": i.notification_status,
                     "state": i.spatial_state,
                     "location": location_at(scenario_meta, i.source_start_ms),
-                    "analysis_status": sam_status.get(i.id),
+                    "analysis_status": ",".join(analysis_statuses.get(i.id, [])) or None,
                 }
                 for i in incidents
             ],
@@ -564,7 +662,17 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
             },
             "actions": _actions_json(actions),
             "analyses": [_analysis_json(a) for a in analyses],
+            "recommendations": _recommendations(analyses),
         }
+
+
+def _recommendations(analyses) -> list[dict]:
+    """Library entries for the fixes a Complete agent analysis chose, in its order."""
+    agent = next((a for a in reversed(analyses) if a.kind == "agent" and a.status == "Complete"), None)
+    if agent is None or not agent.output_text:
+        return []
+    library = {f["id"]: f for f in _fixes_library()}
+    return [library[r] for r in json.loads(agent.output_text).get("recommendation_ids", []) if r in library]
 
 
 spatial_runs = SpatialRunManager()

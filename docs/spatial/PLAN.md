@@ -43,6 +43,15 @@ Ngày 5 đã xong ngày 2026-10-29. Kết quả:
 - Bộ test: 148 passed.
 - Chưa làm: IoU giữa mask SAM và mask đúng render từ scene.
 
+Ngày 6 đã xong ngày 2026-10-30. Kết quả:
+
+- `backend/app/services/incident_agent.py` chạy vòng tool của `muse-spark-1.3` với tối đa 5 lần gọi tool và 45 s. Bốn tool chỉ đọc bằng chứng đã lưu: `get_event_context`, `get_frame_analysis`, `get_recent_incidents`, `get_environment_fixes`. Gợi ý lấy từ `assets/fixes/library.json`.
+- Câu trả lời chỉ được chấp nhận khi mỗi nhận định trích evidence id mà tool đã trả về trong lần chạy đó và mỗi gợi ý là fix mà `get_environment_fixes` đã trả về. Vi phạm được ghi Failed kèm lý do; nội dung bị từ chối chỉ lưu để chẩn đoán, không hiển thị.
+- Agent chạy sau SAM trong cùng task nền; test xác nhận lỗi agent không làm chậm hay chặn cảnh báo, và Stop đặt agent đang chạy thành Cancelled.
+- Lần chạy thật đầu tiên bị Failed: `finish_reason` là `length`, JSON bị cắt ở ký tự 962 vì token suy luận cũng tính vào `max_tokens = 1200`. Đã tăng `AGENT_MAX_TOKENS` lên 4000, yêu cầu tối đa 4 nhận định, và ghi rõ lý do "cut off at the token limit".
+- Lần chạy thật sau sửa: Complete, 4 lần gọi tool, 14,2 s, 6.786 token (4.213 vào, 2.573 ra), khoảng 0,016 USD. Bốn nhận định trích `imu:1`, `location:stairs_approach`, `frame:S2-024000`, `sam:1`, `wearer:1`, `history:stairs_approach`; ba điều chưa chắc chắn; ba gợi ý từ thư viện (`docs/spatial/evidence/day6/evidence-drawer-agent.png`).
+- Bộ test: 163 passed.
+
 ## Ngày 1 có gate bắt buộc
 
 ### G1. Model và ý nghĩa nhãn

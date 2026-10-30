@@ -141,6 +141,7 @@ class SpatialAnalysis(Base):
     output_text = Column(Text, nullable=True)  # raw SAM output; masks are decoded from it
     boxes = Column(Text, nullable=True)  # JSON list
     duration_ms = Column(Integer, nullable=True)
+    tool_log = Column(Text, nullable=True)  # agent: JSON {calls, usage}
     created_at = Column(DateTime, nullable=False)
     finished_at = Column(DateTime, nullable=True)
 

@@ -1,0 +1,14 @@
+{
+  "version": "1",
+  "source": "Curated home-safety changes for the demo. Environmental and routine changes only; no medical advice.",
+  "fixes": [
+    { "id": "stairs_handrail_both_sides", "hazard": "stairs", "title": "Handrails on both sides of the stairs", "detail": "A continuous rail on each side gives a hand hold going up and down, whichever hand is free." },
+    { "id": "stairs_motion_lighting", "hazard": "stairs", "title": "Motion-sensor lighting at the top and bottom of the stairs", "detail": "Lights that switch on by themselves avoid walking the stairs in the dark, especially in the evening." },
+    { "id": "stairs_contrast_edges", "hazard": "stairs", "title": "High-contrast strips on step edges", "detail": "A visible edge on each tread makes the end of every step easier to see." },
+    { "id": "stairs_non_slip_treads", "hazard": "stairs", "title": "Non-slip treads", "detail": "Textured treads reduce slipping on smooth wooden steps." },
+    { "id": "stairs_clear_landing", "hazard": "stairs", "title": "Keep the stairs and landing clear", "detail": "No shoes, bags or boxes on the steps or the landing." },
+    { "id": "stairs_seat_at_bottom", "hazard": "stairs", "title": "A seat near the foot of the stairs", "detail": "A place to sit before climbing or after coming down." },
+    { "id": "rug_secure_edges", "hazard": "rug", "title": "Secure or remove loose rugs", "detail": "Non-slip underlay or tape keeps rug edges flat." },
+    { "id": "bathroom_grab_bars", "hazard": "bathroom", "title": "Grab bars by the toilet and in the shower", "detail": "Fixed bars give support when sitting down, standing up and stepping in or out." }
+  ]
+}
