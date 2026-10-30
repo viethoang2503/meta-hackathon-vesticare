@@ -52,6 +52,15 @@ Ngày 6 đã xong ngày 2026-10-30. Kết quả:
 - Lần chạy thật sau sửa: Complete, 4 lần gọi tool, 14,2 s, 6.786 token (4.213 vào, 2.573 ra), khoảng 0,016 USD. Bốn nhận định trích `imu:1`, `location:stairs_approach`, `frame:S2-024000`, `sam:1`, `wearer:1`, `history:stairs_approach`; ba điều chưa chắc chắn; ba gợi ý từ thư viện (`docs/spatial/evidence/day6/evidence-drawer-agent.png`).
 - Bộ test: 163 passed.
 
+Ngày 7 đã xong ngày 2026-10-30. Kết quả:
+
+- Lời nhắc theo zone: vòng ingest xác định zone theo tuyến đường cho từng mẫu. Vào zone `fall_exposure` thì ghi action `advisory` (hiện) và chạy SAM `sam_advisory` trên ảnh lúc vào; vào lại cùng zone trong 60 s thì ghi action `advisory` với `shown: false` và không gọi SAM. Lời nhắc không báo ai.
+- HUD mô phỏng trên khung camera kính (`dashboard/spatial/hud.js`): lời nhắc màu cam kèm kết quả SAM; khi ngã là "Are you OK?" với đếm ngược 7 s và nút "I'm OK".
+- Người chăm sóc: `POST /api/spatial/incidents/{id}/acknowledge`, nút Acknowledge trong ngăn bằng chứng, đếm ngược tới liên hệ 2. Không xác nhận trong 20 s sau khi liên hệ 1 nhận tin thì `escalate → contact_2` đúng một lần. Hạn chót của người đeo và người chăm sóc lưu trong DB.
+- Flow `spatial_day7.py` trên instance cô lập, bấm nút thật: S1 hiện lời nhắc ở 16,34 s, SAM xác nhận trên `S1-016500`, lần vào lại ở 35,26 s không hiện; S2 bấm "I'm OK" thì chỉ có `self_report`, không ai nhận tin; S2 không bấm thì có `notify → contact_1`, `escalate → contact_2`, `ack → caregiver_demo`. Ảnh ở `docs/spatial/evidence/day7/`.
+- Bộ test: 169 passed.
+- Ghi chú: lời giải thích của agent phản ánh trạng thái lúc agent chạy (ví dụ "wearer response is pending" trước khi hết đếm ngược).
+
 ## Ngày 1 có gate bắt buộc
 
 ### G1. Model và ý nghĩa nhãn

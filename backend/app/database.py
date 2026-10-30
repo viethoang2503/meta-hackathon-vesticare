@@ -70,6 +70,10 @@ def _upgrade_db() -> None:
         "ALTER TABLE alert_events ADD COLUMN source_end_ms INTEGER",
         "ALTER TABLE alert_events ADD COLUMN decision_source TEXT",
         "ALTER TABLE alert_events ADD COLUMN spatial_state TEXT",
+        "ALTER TABLE alert_events ADD COLUMN wearer_deadline_at DATETIME",
+        "ALTER TABLE alert_events ADD COLUMN caregiver_deadline_at DATETIME",
+        # A day-5 spatial_analyses table keeps incident_id NOT NULL; advisory analyses need a fresh table.
+        "ALTER TABLE spatial_analyses ADD COLUMN advisory_id INTEGER",
     ]
     with engine.connect() as conn:
         for sql in migrations:

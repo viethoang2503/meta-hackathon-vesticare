@@ -16,7 +16,14 @@
   #view canvas { display: block; }
   aside { border-left: 1px solid var(--line); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
   section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
-  #glasses { width: 100%; aspect-ratio: 4 / 3; background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  #glasses { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .hud { position: absolute; left: 10px; right: 10px; top: 10px; padding: 10px 12px; border-radius: 10px; backdrop-filter: blur(2px); }
+  .hud-tip { background: #d9822bdd; color: #1a1209; }
+  .hud-ask { background: #e0483ee6; color: #fff; }
+  .hud-title { font-weight: 700; font-size: 15px; }
+  .hud-line { font-size: 12px; margin-top: 2px; }
+  #hud-ok { margin-top: 8px; background: #fff; color: #7a1410; font-weight: 700; border: 0; }
+  .tick-advisory { background: var(--accent); width: 8px; margin-left: -4px; cursor: default; }
   #glasses canvas { width: 100% !important; height: 100% !important; display: block; }
   .source { font-size: 11px; color: var(--muted); margin-top: 6px; }
   select, button, label.toggle { background: #262b33; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: inherit; }
@@ -76,7 +83,7 @@
     </section>
     <section>
       <h2>Glasses camera</h2>
-      <div id="glasses"></div>
+      <div id="glasses"><div id="hud" class="hud" hidden role="status" aria-live="assertive"></div></div>
       <div class="row" style="margin-top:8px">
         <select id="glasses-preset" aria-label="Glasses camera preset"></select>
       </div>

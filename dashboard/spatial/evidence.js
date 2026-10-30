@@ -10,6 +10,44 @@ const $ = (id) => document.getElementById(id);
 let openId = null;
 let openKey = "";
 let latestRequest = 0;
+let onCaregiverAction = () => {};
+
+export function setCaregiverHandler(handler) {
+  onCaregiverAction = handler;
+}
+
+const CAREGIVER = "caregiver_demo";
+
+async function acknowledge(id) {
+  await fetch(`/api/spatial/incidents/${id}/acknowledge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ actor_id: CAREGIVER }),
+  });
+  await openIncident(id);
+  onCaregiverAction();
+}
+
+function caregiverHtml(detail) {
+  if (detail.is_acknowledged) {
+    const ack = detail.actions.find((a) => a.kind === "ack");
+    return `<div id="evidence-ack">Acknowledged by ${ack ? escapeHtml(ack.target) : "caregiver"}</div>`;
+  }
+  if (detail.state !== "alerted") return "";
+  const escalated = detail.actions.some((a) => a.kind === "escalate");
+  const deadline = detail.caregiver_deadline_at ? new Date(`${detail.caregiver_deadline_at}Z`).getTime() : null;
+  const left = deadline ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : null;
+  const note = escalated ? "Contact 2 has been told." : left !== null ? `Contact 2 will be told in ${left} s.` : "";
+  const countdown = !escalated && deadline ? ` data-deadline="${deadline}"` : "";
+  return `<div class="row"><button id="ack" type="button">Acknowledge</button><span class="muted" id="evidence-escalation"${countdown}>${note}</span></div>`;
+}
+
+setInterval(() => {
+  const el = document.getElementById("evidence-escalation");
+  if (!el?.dataset.deadline) return;
+  const left = Math.max(0, Math.ceil((Number(el.dataset.deadline) - Date.now()) / 1000));
+  el.textContent = left > 0 ? `Contact 2 will be told in ${left} s.` : "Telling contact 2…";
+}, 500);
 
 const STATE_LABEL = {
   awaiting_wearer: "Waiting for the wearer",
@@ -150,9 +188,12 @@ function render(detail) {
     </div>
     <h3>Explanation</h3>
     <div id="evidence-agent">${agentHtml(detail)}</div>
+    <h3>Caregiver</h3>
+    <div id="evidence-caregiver">${caregiverHtml(detail)}</div>
     <h3>Actions</h3>
     <ul id="evidence-actions">${actions}</ul>`;
   drawImu($("evidence-imu"), detail);
+  $("ack")?.addEventListener("click", () => acknowledge(detail.id));
   if (sam?.status === "Complete" && $("evidence-frame")) drawMask($("evidence-frame"), $("evidence-mask"), sam.output_text);
 }
 

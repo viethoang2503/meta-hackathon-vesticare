@@ -60,6 +60,13 @@ export function createSession({ onSnapshot }) {
     $("timeline-label").textContent = `${fmt(snapshot.source_offset_ms)} / ${fmt(duration)}`;
     const ticks = $("timeline-ticks");
     ticks.innerHTML = "";
+    for (const adv of snapshot.advisories.filter((a) => a.shown)) {
+      const tick = document.createElement("span");
+      tick.className = "tick tick-advisory";
+      tick.style.left = `${(100 * adv.source_ms) / duration}%`;
+      tick.title = `Advisory at ${fmt(adv.source_ms)}: ${adv.text}`;
+      ticks.appendChild(tick);
+    }
     for (const inc of snapshot.incidents) {
       const tick = document.createElement("button");
       tick.className = "tick";
@@ -139,7 +146,23 @@ export function createSession({ onSnapshot }) {
   if (fromHash) load(fromHash);
   else render();
 
+  async function wearerOk(incidentId) {
+    try {
+      await api(`/api/spatial/incidents/${incidentId}/wearer-response`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response: "ok" }),
+      });
+    } catch (err) {
+      status.textContent = `I'm OK failed: ${err.message}`;
+    }
+    if (snapshot) load(snapshot.id);
+  }
+
   return {
+    snapshot: () => snapshot,
+    refresh: () => snapshot && load(snapshot.id),
+    wearerOk,
     // The wearer's route and the source offset to draw at `now`, interpolated between polls.
     current(now) {
       if (!snapshot) return null;

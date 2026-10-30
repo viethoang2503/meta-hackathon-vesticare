@@ -141,3 +141,7 @@ AGENT_MAX_TOOL_CALLS = 5
 # Reasoning tokens count against this; 1200 cut the final JSON short on the first real run.
 AGENT_MAX_TOKENS = 4000
 FIXES_LIBRARY_PATH = PROJECT_ROOT / "assets" / "fixes" / "library.json"
+
+# Ngay 7: loi nhac theo zone va nguoi cham soc (docs/spatial/SPEC.md, bang tham so)
+ADVISORY_COOLDOWN_SECONDS = 60
+CAREGIVER_ACK_TIMEOUT_SECONDS = 20

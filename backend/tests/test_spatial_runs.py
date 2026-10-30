@@ -43,6 +43,12 @@ from app.services.spatial_runs import (  # noqa: E402
 
 # The SisFall impact; the model also fires at 14720 ms while still walking, which the stillness rule drops.
 S2_FALL_START_MS = 23940
+S1_STAIRS_ENTRIES_MS = (16340, 35260)
+S2_STAIRS_ENTRY_MS = 20180
+
+
+def incident_actions(snap):
+    return [(a["kind"], a["target"]) for a in snap["actions"] if a["incident_id"] is not None]
 SAM_OUTPUT = (Path(__file__).parent / "fixtures" / "sam_stairs_output.txt").read_text()
 
 
@@ -132,7 +138,7 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertEqual(incident["notification_status"], "simulated")
         self.assertEqual(incident["state"], "alerted")
         self.assertEqual(
-            [(a["kind"], a["target"], a["incident_id"]) for a in snap["actions"]],
+            [(a["kind"], a["target"], a["incident_id"]) for a in snap["actions"] if a["incident_id"] is not None],
             [("notify", "contact_1", incident["id"])],
         )
 
@@ -294,10 +300,78 @@ class SpatialRunsTest(unittest.TestCase):
         [agent] = asyncio.run(go())
         self.assertEqual((agent["status"], agent["reason"]), ("Cancelled", "user_stop"))
 
-    def test_s1_walk_produces_no_incident(self):
+    def test_s1_walk_produces_no_incident_and_one_shown_advisory(self):
         snap = self.run_to_end("S1")
         self.assertEqual(snap["incidents"], [])
-        self.assertEqual(snap["actions"], [])
+        self.assertEqual(
+            [(a["zone_id"], a["source_ms"], a["shown"]) for a in snap["advisories"]],
+            [("stairs_approach", S1_STAIRS_ENTRIES_MS[0], True), ("stairs_approach", S1_STAIRS_ENTRIES_MS[1], False)],
+        )
+        self.assertEqual(snap["advisories"][0]["text"], "Stairs ahead. Use the handrail.")
+        self.assertEqual([a["kind"] for a in snap["actions"]], ["advisory", "advisory"])
+
+    def test_a_shown_advisory_is_confirmed_by_sam_on_the_entry_frame(self):
+        snap = self.run_to_end("S1")
+        shown = snap["advisories"][0]
+        self.assertEqual((shown["sam_status"], shown["frame_id"]), ("Complete", "S1-016500"))
+        self.assertIsNone(snap["advisories"][1]["sam_status"], "a suppressed entry does not call SAM")
+
+    def test_the_advisory_comes_before_the_fall_and_notifies_nobody(self):
+        snap = self.run_to_end("S2")
+        [advisory] = snap["advisories"]
+        self.assertEqual((advisory["source_ms"], advisory["shown"]), (S2_STAIRS_ENTRY_MS, True))
+        self.assertLess(advisory["source_ms"], S2_FALL_START_MS)
+        advisory_action = next(a for a in snap["actions"] if a["kind"] == "advisory")
+        self.assertIsNone(advisory_action["incident_id"])
+
+    def run_until_alerted(self, after, **kwargs):
+        """Run S2, wait until contact_1 is notified, then call after(manager, session_id, incident_id)."""
+        async def go():
+            m = self.manager(run_timeout_seconds=60, **kwargs)
+            sid = await m.start("S2")
+            incident_id = await self.wait_for_incident(sid)
+            while session_snapshot(sid, self.db)["incidents"][0]["state"] != "alerted":
+                await asyncio.sleep(0.05)
+            extra = await after(m, sid, incident_id)
+            await m.stop(sid)
+            return session_snapshot(sid, self.db), extra
+        return asyncio.run(go())
+
+    def test_caregiver_ack_before_the_deadline_means_contact_2_is_never_told(self):
+        async def ack_then_wait(m, sid, incident_id):
+            result = await m.acknowledge(incident_id, "caregiver_demo")
+            await asyncio.sleep(0.8)
+            return result
+        snap, result = self.run_until_alerted(ack_then_wait, caregiver_ack_seconds=0.4)
+        self.assertEqual((result["applied"], result["reason"]), (True, None))
+        self.assertTrue(snap["incidents"][0]["is_acknowledged"])
+        self.assertEqual(incident_actions(snap), [("notify", "contact_1"), ("ack", "caregiver_demo")])
+        detail = incident_detail(snap["incidents"][0]["id"], self.db)
+        self.assertIsNotNone(detail["caregiver_deadline_at"])
+        self.assertIsNotNone(detail["acknowledged_at"])
+
+    def test_no_ack_escalates_to_contact_2_exactly_once(self):
+        async def wait_out(m, sid, incident_id):
+            await asyncio.sleep(1.2)
+            return await m.acknowledge(incident_id, "caregiver_demo")
+        snap, late_ack = self.run_until_alerted(wait_out, caregiver_ack_seconds=0.4)
+        self.assertEqual(incident_actions(snap), [("notify", "contact_1"), ("escalate", "contact_2"), ("ack", "caregiver_demo")])
+        self.assertTrue(late_ack["applied"])
+
+    def test_a_second_ack_is_not_recorded_twice(self):
+        async def ack_twice(m, sid, incident_id):
+            first = await m.acknowledge(incident_id, "caregiver_demo")
+            return first, await m.acknowledge(incident_id, "caregiver_demo")
+        snap, (first, second) = self.run_until_alerted(ack_twice, caregiver_ack_seconds=5)
+        self.assertEqual((first["applied"], second["applied"], second["reason"]), (True, False, "already_recorded"))
+        self.assertEqual(incident_actions(snap).count(("ack", "caregiver_demo")), 1)
+
+    def test_stop_during_the_caregiver_window_means_no_escalation_later(self):
+        async def stop_and_wait(m, sid, incident_id):
+            await m.stop(sid)
+            await asyncio.sleep(0.8)
+        snap, _ = self.run_until_alerted(stop_and_wait, caregiver_ack_seconds=0.4)
+        self.assertEqual(incident_actions(snap), [("notify", "contact_1")])
 
     def test_im_ok_inside_the_countdown_cancels_and_nobody_is_notified(self):
         async def go():
@@ -311,7 +385,7 @@ class SpatialRunsTest(unittest.TestCase):
         result, snap = asyncio.run(go())
         self.assertEqual((result["applied"], result["incident_state"]), (True, "cancelled_by_wearer"))
         self.assertEqual(snap["incidents"][0]["state"], "cancelled_by_wearer")
-        self.assertEqual([(a["kind"], a["target"]) for a in snap["actions"]], [("self_report", "wearer")])
+        self.assertEqual(incident_actions(snap), [("self_report", "wearer")])
 
     def test_im_ok_after_the_alert_is_recorded_but_does_not_cancel(self):
         async def go():
@@ -326,10 +400,7 @@ class SpatialRunsTest(unittest.TestCase):
         result, again, snap = asyncio.run(go())
         self.assertEqual((result["applied"], result["incident_state"]), (True, "alerted"))
         self.assertEqual((again["applied"], again["reason"]), (False, "already_recorded"))
-        self.assertEqual(
-            [(a["kind"], a["target"]) for a in snap["actions"]],
-            [("notify", "contact_1"), ("self_report", "wearer")],
-        )
+        self.assertEqual(incident_actions(snap), [("notify", "contact_1"), ("self_report", "wearer")])
 
     def test_stop_during_the_countdown_means_no_later_notification(self):
         async def go():
@@ -343,7 +414,7 @@ class SpatialRunsTest(unittest.TestCase):
         at_stop, later = asyncio.run(go())
         self.assertEqual(later, at_stop)
         self.assertEqual(later["incidents"][0]["state"], "awaiting_wearer")
-        self.assertEqual(later["actions"], [])
+        self.assertEqual(incident_actions(later), [])
 
     def test_run_timeout_stops_the_run(self):
         async def go():

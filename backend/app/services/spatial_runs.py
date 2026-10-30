@@ -17,6 +17,11 @@ background so a slow or failing API never delays the countdown.
 Ending a run settles unfinished analyses: Stop -> Cancelled, run timeout ->
 TimedOut, restart -> Failed; a late API answer does not overwrite that.
 
+Entering a zone with fall_exposure records an advisory (the HUD tip) and a
+SAM confirmation of the frame at entry; re-entering within the cooldown is
+logged but not shown. Once contact_1 is notified, an unacknowledged incident
+escalates to contact_2 exactly once after the caregiver window.
+
 Each run has one lock. Ending a run and every write the run makes (incident
 rows, progress, notifications) check status and commit under that lock, so a
 Stop can never land between a write's status check and its commit. Stop does
@@ -39,8 +44,12 @@ from datetime import datetime, timezone
 import numpy as np
 from sqlalchemy.exc import IntegrityError
 
+from datetime import timedelta
+
 from app.config import (
+    ADVISORY_COOLDOWN_SECONDS,
     AGENT_MAX_TOOL_CALLS,
+    CAREGIVER_ACK_TIMEOUT_SECONDS,
     AGENT_MODEL,
     ANALYSIS_TIMEOUT_SECONDS,
     FIXES_LIBRARY_PATH,
@@ -129,6 +138,8 @@ class SpatialRunManager:
         segmenter=None,
         chat=None,
         analysis_timeout_seconds: float = ANALYSIS_TIMEOUT_SECONDS,
+        caregiver_ack_seconds: float = CAREGIVER_ACK_TIMEOUT_SECONDS,
+        advisory_cooldown_seconds: float = ADVISORY_COOLDOWN_SECONDS,
     ) -> None:
         self._realtime = realtime
         self._run_timeout = run_timeout_seconds
@@ -138,6 +149,8 @@ class SpatialRunManager:
         self._segment = segmenter or sam_client.segment
         self._chat = chat or muse_client.chat
         self._analysis_timeout = analysis_timeout_seconds
+        self._caregiver_ack = caregiver_ack_seconds
+        self._advisory_cooldown_ms = advisory_cooldown_seconds * 1000
         self._runs: dict[str, asyncio.Task] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._stop_requested: dict[str, asyncio.Event] = {}
@@ -222,6 +235,7 @@ class SpatialRunManager:
         lock, stop_requested = self._locks[session_id], self._stop_requested[session_id]
         monitor = StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector)
         incident_rows: dict[int, int] = {}
+        route_state = {"zone": None, "last_shown_ms": {}}
         loop = asyncio.get_running_loop()
         started = loop.time()
         cursor, total = 0, len(scenario.samples)
@@ -233,12 +247,15 @@ class SpatialRunManager:
                     return
                 due = min(total, int(elapsed * scenario.sample_rate_hz) + 1) if self._realtime else total
                 if due > cursor:
-                    opened = await asyncio.to_thread(
-                        self._ingest, lock, session_id, scenario, monitor, incident_rows, cursor, due
+                    ingested = await asyncio.to_thread(
+                        self._ingest, lock, session_id, scenario, monitor, incident_rows, route_state, cursor, due
                     )
-                    if opened is None:
+                    if ingested is None:
                         return
+                    opened, advisories = ingested
                     cursor = due
+                    for advisory in advisories:
+                        self._background(self._confirm_advisory(session_id, lock, scenario, *advisory))
                     for incident_id in opened:
                         self._background(self._wearer_countdown(session_id, lock, incident_id))
                         self._background(self._analyse(session_id, lock, scenario, incident_id))
@@ -259,13 +276,25 @@ class SpatialRunManager:
             self._locks.pop(session_id, None)
             self._stop_requested.pop(session_id, None)
 
-    def _ingest(self, lock, session_id, scenario, monitor, incident_rows, start, end) -> list[int] | None:
-        """Runs in a worker thread. Returns new incident ids, or None once the run has ended."""
+    def _ingest(self, lock, session_id, scenario, monitor, incident_rows, route_state, start, end):
+        """Runs in a worker thread. Returns (new incident ids, shown advisories), or None once the run has ended."""
         events = [monitor.add_sample(int(scenario.source_ms[j]), scenario.samples[j]) for j in range(start, end)]
+        entries = self._zone_entries(scenario, route_state, start, end)
         with lock, self._db() as db:
             session = db.get(SpatialSession, session_id)
             if session is None or session.status != "Running":
                 return None
+            shown_advisories = []
+            for source_ms, zone, shown in entries:
+                action = SpatialAction(
+                    session_id=session_id, kind="advisory", target=zone["id"], created_at=_utcnow(),
+                    detail=json.dumps({"source_ms": source_ms, "shown": shown, "text": zone["advisory_text"],
+                                       "source": "Authored location"}),
+                )
+                db.add(action)
+                db.flush()
+                if shown:
+                    shown_advisories.append((action.id, source_ms, zone))
             opened = []
             for event in events:
                 if event is None:
@@ -281,6 +310,7 @@ class SpatialRunManager:
                         is_acknowledged=False,
                         notification_status="pending",
                         spatial_state="awaiting_wearer",
+                        wearer_deadline_at=_utcnow() + timedelta(seconds=self._wearer_cancel),
                         session_id=session_id,
                         source_start_ms=inc.source_start_ms,
                         source_end_ms=inc.source_end_ms,
@@ -298,8 +328,90 @@ class SpatialRunManager:
             session.source_offset_ms = int(scenario.source_ms[end - 1])
             session.recording_ended = end >= len(scenario.samples)
             db.commit()
-        _hint(session_id, "incident" if opened else "progress")
-        return opened
+        _hint(session_id, "incident" if opened or entries else "progress")
+        return opened, shown_advisories
+
+    def _zone_entries(self, scenario, route_state, start, end) -> list[tuple[int, dict, bool]]:
+        """Each sample's authored zone; an entry into a fall_exposure zone is shown unless that zone showed one within the cooldown."""
+        entries = []
+        for j in range(start, end):
+            ms = int(scenario.source_ms[j])
+            zone_id = location_at(scenario.meta, ms)["zone_id"]
+            if zone_id == route_state["zone"]:
+                continue
+            route_state["zone"] = zone_id
+            zone = next((z for z in home_manifest(scenario.meta["home"])["zones"] if z["id"] == zone_id), None)
+            if not zone or not zone["fall_exposure"]:
+                continue
+            last = route_state["last_shown_ms"].get(zone_id)
+            shown = last is None or ms - last >= self._advisory_cooldown_ms
+            if shown:
+                route_state["last_shown_ms"][zone_id] = ms
+            entries.append((ms, zone, shown))
+        return entries
+
+    async def _confirm_advisory(self, session_id, lock, scenario, action_id, source_ms, zone) -> None:
+        """SAM on the frame at zone entry. The HUD tip never waits for it."""
+        try:
+            analysis_id, request = await asyncio.to_thread(
+                self._open_advisory_analysis, lock, session_id, scenario, action_id, source_ms, zone
+            )
+        except Exception:
+            logger.exception("could not open the advisory SAM analysis for action %s", action_id)
+            return
+        if request is not None:
+            await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, await self._run_segment(request))
+
+    def _open_advisory_analysis(self, lock, session_id, scenario, action_id, source_ms, zone):
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            if session is None or session.status != "Running":
+                return None, None
+            frame = frame_near(scenario.id, source_ms)
+            analysis = SpatialAnalysis(session_id=session_id, advisory_id=action_id, kind="sam_advisory",
+                                       status="Running", prompt=zone["hazard_prompt"], frame_id=frame.get("id"),
+                                       created_at=_utcnow())
+            request = self._segment_request(scenario, frame, analysis)
+            db.add(analysis)
+            db.commit()
+            analysis_id = analysis.id
+        _hint(session_id, "analysis")
+        return analysis_id, request
+
+    def _segment_request(self, scenario, frame, analysis):
+        """(image, mime, prompt) for SAM, or None after marking the analysis Unavailable."""
+        if frame["status"] != "Available":
+            analysis.status, analysis.reason = "Unavailable", frame["reason"]
+        elif not analysis.prompt:
+            analysis.status, analysis.reason = "Unavailable", "the zone has no hazard prompt"
+        else:
+            path = SCENARIOS_DIR / scenario.id / frame["url"].split(f"/{scenario.id}/", 1)[1]
+            try:
+                return (_read_frame(path), "image/jpeg", analysis.prompt)
+            except OSError as err:
+                analysis.status, analysis.reason = "Unavailable", f"frame file unreadable: {type(err).__name__} {path.name}"
+        analysis.finished_at = _utcnow()
+        return None
+
+    async def _run_segment(self, request) -> dict:
+        try:
+            # The budget covers the whole call; the worker thread may finish later, and
+            # _close_analysis then finds the row TimedOut and drops the late answer.
+            result = await asyncio.wait_for(asyncio.to_thread(self._segment, *request), self._analysis_timeout)
+            return {
+                "status": "Complete" if result.boxes else "NoMatch",
+                "output_text": result.output_text,
+                "boxes": json.dumps(result.boxes),
+                "duration_ms": result.duration_ms,
+                "model": result.model,
+            }
+        except asyncio.TimeoutError:
+            return {"status": "TimedOut", "reason": f"no result within the {self._analysis_timeout} s analysis budget"}
+        except sam_client.SamError as err:
+            return {"status": err.status, "reason": err.reason}
+        except Exception as err:
+            logger.exception("SAM call failed")
+            return {"status": "Failed", "reason": type(err).__name__}
 
     def _background(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -308,18 +420,69 @@ class SpatialRunManager:
 
     async def _wearer_countdown(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
         await asyncio.sleep(self._wearer_cancel)
-        await asyncio.to_thread(self._alert_if_unanswered, lock, session_id, incident_id)
+        if await asyncio.to_thread(self._alert_if_unanswered, lock, session_id, incident_id):
+            await asyncio.sleep(self._caregiver_ack)
+            await asyncio.to_thread(self._escalate_if_unacknowledged, lock, session_id, incident_id)
 
-    def _alert_if_unanswered(self, lock: threading.Lock, session_id: str, incident_id: int) -> None:
+    def _escalate_if_unacknowledged(self, lock: threading.Lock, session_id: str, incident_id: int) -> None:
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            row = db.get(AlertEvent, incident_id)
+            if session is None or session.status != "Running" or row.spatial_state != "alerted" or row.is_acknowledged:
+                return
+            db.add(SpatialAction(
+                session_id=session_id, incident_id=incident_id, kind="escalate", target="contact_2",
+                detail=json.dumps({"channel": "simulated", "after_caregiver_window_s": self._caregiver_ack}),
+                created_at=_utcnow(),
+            ))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                return
+        _hint(session_id, "action")
+
+    async def acknowledge(self, incident_id: int, actor_id: str) -> dict | None:
+        """The caregiver takes the incident. Returns None for an unknown incident."""
+        with self._db() as db:
+            row = db.get(AlertEvent, incident_id)
+            if row is None or row.session_id is None:
+                return None
+            session_id, state = row.session_id, row.spatial_state
+        lock = self._locks.get(session_id)
+        if lock is None:
+            return {"incident_id": incident_id, "applied": False, "incident_state": state, "reason": "run_ended"}
+        return await asyncio.to_thread(self._record_ack, lock, session_id, incident_id, actor_id)
+
+    def _record_ack(self, lock, session_id, incident_id, actor_id) -> dict:
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            row = db.get(AlertEvent, incident_id)
+            result = {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state}
+            if session is None or session.status != "Running":
+                return {**result, "reason": "run_ended"}
+            if row.spatial_state == "cancelled_by_wearer":
+                return {**result, "reason": "cancelled_by_wearer"}
+            if row.is_acknowledged:
+                return {**result, "reason": "already_recorded"}
+            row.is_acknowledged, row.acknowledged_at = True, _utcnow()
+            db.add(SpatialAction(session_id=session_id, incident_id=incident_id, kind="ack", target=actor_id,
+                                 detail=json.dumps({"by": actor_id}), created_at=_utcnow()))
+            db.commit()
+        _hint(session_id, "action")
+        return {**result, "applied": True, "reason": None}
+
+    def _alert_if_unanswered(self, lock: threading.Lock, session_id: str, incident_id: int) -> bool:
         """Simulated sink: the notification is the action-log row. Nothing leaves the process."""
         with lock, self._db() as db:
             session = db.get(SpatialSession, session_id)
             row = db.get(AlertEvent, incident_id)
             if session is None or session.status != "Running" or row.spatial_state != "awaiting_wearer":
-                return
+                return False
             row.spatial_state = "alerted"
             row.notification_status = "simulated"
             row.notification_sent_at = _utcnow()
+            row.caregiver_deadline_at = _utcnow() + timedelta(seconds=self._caregiver_ack)
             db.add(SpatialAction(
                 session_id=session_id,
                 incident_id=incident_id,
@@ -330,6 +493,7 @@ class SpatialRunManager:
             ))
             db.commit()
         _hint(session_id, "action")
+        return True
 
     async def _analyse(self, session_id: str, lock: threading.Lock, scenario: Scenario, incident_id: int) -> None:
         try:
@@ -341,24 +505,7 @@ class SpatialRunManager:
             if analysis_id is not None:
                 await self._explain(session_id, lock, scenario, incident_id)
             return
-        try:
-            # The budget covers the whole call; the worker thread may finish later, and
-            # _close_analysis then finds the row TimedOut and drops the late answer.
-            result = await asyncio.wait_for(asyncio.to_thread(self._segment, *request), self._analysis_timeout)
-            outcome = {
-                "status": "Complete" if result.boxes else "NoMatch",
-                "output_text": result.output_text,
-                "boxes": json.dumps(result.boxes),
-                "duration_ms": result.duration_ms,
-                "model": result.model,
-            }
-        except asyncio.TimeoutError:
-            outcome = {"status": "TimedOut", "reason": f"no result within the {self._analysis_timeout} s analysis budget"}
-        except sam_client.SamError as err:
-            outcome = {"status": err.status, "reason": err.reason}
-        except Exception as err:
-            logger.exception("SAM analysis %s failed", analysis_id)
-            outcome = {"status": "Failed", "reason": f"{type(err).__name__}"}
+        outcome = await self._run_segment(request)
         await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
         await self._explain(session_id, lock, scenario, incident_id)
 
@@ -432,19 +579,7 @@ class SpatialRunManager:
                 session_id=session_id, incident_id=incident_id, kind="sam", status="Running",
                 prompt=(zone or {}).get("hazard_prompt"), frame_id=frame.get("id"), created_at=_utcnow(),
             )
-            request = None
-            if frame["status"] != "Available":
-                analysis.status, analysis.reason = "Unavailable", frame["reason"]
-            elif not analysis.prompt:
-                analysis.status, analysis.reason = "Unavailable", f"zone {location['zone_id']} has no hazard prompt"
-            else:
-                path = SCENARIOS_DIR / scenario.id / frame["url"].split(f"/{scenario.id}/", 1)[1]
-                try:
-                    request = (_read_frame(path), "image/jpeg", analysis.prompt)
-                except OSError as err:
-                    analysis.status, analysis.reason = "Unavailable", f"frame file unreadable: {type(err).__name__} {path.name}"
-            if request is None:
-                analysis.finished_at = _utcnow()
+            request = self._segment_request(scenario, frame, analysis)
             db.add(analysis)
             db.commit()
             analysis_id = analysis.id
@@ -569,8 +704,12 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
             return None
         scenario_meta = load_scenario(s.scenario_id).meta
         analysis_statuses: dict[int, list[str]] = {}
+        advisory_sam: dict[int, SpatialAnalysis] = {}
         for a in db.query(SpatialAnalysis).filter(SpatialAnalysis.session_id == session_id).order_by(SpatialAnalysis.id):
-            analysis_statuses.setdefault(a.incident_id, []).append(a.status)
+            if a.advisory_id is not None:
+                advisory_sam[a.advisory_id] = a
+            else:
+                analysis_statuses.setdefault(a.incident_id, []).append(a.status)
         incidents = (
             db.query(AlertEvent)
             .filter(AlertEvent.session_id == session_id)
@@ -608,11 +747,33 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                     "state": i.spatial_state,
                     "location": location_at(scenario_meta, i.source_start_ms),
                     "analysis_status": ",".join(analysis_statuses.get(i.id, [])) or None,
+                    "acknowledged_at": i.acknowledged_at,
+                    "wearer_deadline_at": i.wearer_deadline_at,
+                    "caregiver_deadline_at": i.caregiver_deadline_at,
                 }
                 for i in incidents
             ],
             "actions": _actions_json(actions),
+            "advisories": [_advisory_json(a, advisory_sam.get(a.id), scenario_meta) for a in actions if a.kind == "advisory"],
         }
+
+
+def _advisory_json(action, sam, scenario_meta) -> dict:
+    detail = json.loads(action.detail)
+    zone = next(z for z in home_manifest(scenario_meta["home"])["zones"] if z["id"] == action.target)
+    return {
+        "action_id": action.id,
+        "zone_id": action.target,
+        "zone_label": zone["label"],
+        "source_ms": detail["source_ms"],
+        "shown": detail["shown"],
+        "text": detail["text"],
+        "location_source": detail["source"],
+        "frame_id": sam.frame_id if sam else None,
+        "sam_status": sam.status if sam else None,
+        "sam_objects": len(json.loads(sam.boxes)) if sam and sam.boxes else 0,
+        "sam_reason": sam.reason if sam else None,
+    }
 
 
 def incident_detail(incident_id: int, session_factory=None) -> dict | None:
@@ -651,6 +812,9 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
             "fall_probability": row.confidence,
             "peak_svm": row.peak_svm,
             "is_acknowledged": row.is_acknowledged,
+            "acknowledged_at": row.acknowledged_at,
+            "wearer_deadline_at": row.wearer_deadline_at,
+            "caregiver_deadline_at": row.caregiver_deadline_at,
             "location": location_at(scenario.meta, row.source_start_ms),
             "frame": frame_near(session.scenario_id, row.source_start_ms),
             "imu": {

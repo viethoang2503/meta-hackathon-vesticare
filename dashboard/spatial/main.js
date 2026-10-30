@@ -1,7 +1,8 @@
 import * as THREE from "./vendor/three.module.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { addLights, buildHome, poseAt } from "./scene.js";
-import { openIncident } from "./evidence.js";
+import { openIncident, setCaregiverHandler } from "./evidence.js";
+import { updateHud } from "./hud.js";
 import { createSession } from "./session.js";
 
 const HOME_ID = "home1";
@@ -186,6 +187,7 @@ const session = createSession({
     if (!snapshot) wearer.visible = false;
   },
 });
+setCaregiverHandler(() => session.refresh());
 
 function render(now) {
   const live = session.current(now);
@@ -194,6 +196,7 @@ function render(now) {
     placeWearer(pose);
     aimGlasses(pose);
   }
+  updateHud(session.snapshot(), live ? live.offset_ms : 0, session.wearerOk);
   const pulse = 1 + 0.15 * Math.sin(now / 200);
   markers.forEach((m) => m.scale.setScalar(pulse));
   renderGlasses(glasses);

@@ -105,6 +105,8 @@ class AlertEvent(Base):
     source_end_ms = Column(Integer, nullable=True)
     decision_source = Column(String, nullable=True)  # "svm_rule" | "keras" | "tflite" | "heuristic"
     spatial_state = Column(String, nullable=True)  # awaiting_wearer | cancelled_by_wearer | alerted
+    wearer_deadline_at = Column(DateTime, nullable=True)
+    caregiver_deadline_at = Column(DateTime, nullable=True)
 
     patient = relationship("Patient", back_populates="alerts")
 
@@ -131,8 +133,9 @@ class SpatialAnalysis(Base):
 
     id = Column(Integer, primary_key=True)
     session_id = Column(String, ForeignKey("spatial_sessions.id"), nullable=False, index=True)
-    incident_id = Column(Integer, ForeignKey("alert_events.id"), nullable=False, index=True)
-    kind = Column(String, nullable=False)  # sam
+    incident_id = Column(Integer, ForeignKey("alert_events.id"), nullable=True, index=True)
+    advisory_id = Column(Integer, ForeignKey("spatial_actions.id"), nullable=True, index=True)
+    kind = Column(String, nullable=False)  # sam | agent | sam_advisory
     status = Column(String, nullable=False)
     reason = Column(Text, nullable=True)
     prompt = Column(String, nullable=True)

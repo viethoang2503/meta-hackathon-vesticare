@@ -51,6 +51,9 @@ class IncidentOut(BaseModel):
     state: str | None
     location: LocationOut
     analysis_status: str | None
+    acknowledged_at: datetime | None
+    wearer_deadline_at: datetime | None
+    caregiver_deadline_at: datetime | None
 
 
 class ActionOut(BaseModel):
@@ -75,10 +78,15 @@ class SessionSnapshot(BaseModel):
     scenario: dict
     incidents: list[IncidentOut]
     actions: list[ActionOut]
+    advisories: list[dict]
 
 
 class WearerResponse(BaseModel):
     response: Literal["ok"]
+
+
+class AckRequest(BaseModel):
+    actor_id: str
 
 
 class WearerResult(BaseModel):
@@ -136,3 +144,11 @@ def get_incident(incident_id: int) -> dict:
     if detail is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return detail
+
+
+@router.post("/incidents/{incident_id}/acknowledge", response_model=WearerResult)
+async def acknowledge(incident_id: int, body: AckRequest):
+    result = await spatial_runs.acknowledge(incident_id, body.actor_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return result
