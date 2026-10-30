@@ -9,6 +9,7 @@ const $ = (id) => document.getElementById(id);
 
 let openId = null;
 let openKey = "";
+let latestRequest = 0;
 
 const STATE_LABEL = {
   awaiting_wearer: "Waiting for the wearer",
@@ -127,14 +128,22 @@ function render(detail) {
   if (sam?.status === "Complete" && $("evidence-frame")) drawMask($("evidence-frame"), $("evidence-mask"), sam.output_text);
 }
 
+// Only the most recent request may render: an older or slower response is dropped.
 export async function openIncident(id) {
-  const r = await fetch(`/api/spatial/incidents/${id}`);
-  if (!r.ok) {
-    $("evidence").innerHTML = `<span class="muted">Incident ${id} could not be loaded.</span>`;
+  const request = ++latestRequest;
+  openId = id;
+  let r, detail;
+  try {
+    r = await fetch(`/api/spatial/incidents/${id}`);
+    detail = r.ok ? await r.json() : null;
+  } catch {
+    detail = null;
+  }
+  if (request !== latestRequest) return;
+  if (!detail) {
+    $("evidence").innerHTML = `<span class="muted" id="evidence-error">Incident ${id} could not be loaded.</span>`;
     return;
   }
-  const detail = await r.json();
-  openId = id;
   openKey = `${detail.state}:${detail.actions.length}:${detail.analyses.map((a) => a.status).join(",")}`;
   render(detail);
 }

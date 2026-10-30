@@ -5,13 +5,14 @@
 import { openIncident, refreshOpenIncident } from "./evidence.js";
 
 const POLL_MS = 500;
+const RETRY_MS = 1500;
 
 const $ = (id) => document.getElementById(id);
 
 async function api(path, options) {
   const r = await fetch(path, options);
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail ?? `${r.status} ${path}`);
+  if (!r.ok) throw Object.assign(new Error(body.detail ?? `${r.status} ${path}`), { status: r.status });
   return body;
 }
 
@@ -29,6 +30,7 @@ export function createSession({ onSnapshot }) {
   let snapshot = null;
   let fetchedAt = 0;
   let timer = null;
+  let connectionLost = false;
 
   const scenarioSelect = $("scenario"), start = $("start"), stop = $("stop"), status = $("run-status");
 
@@ -49,7 +51,8 @@ export function createSession({ onSnapshot }) {
     }
     const ended = snapshot.recording_ended ? " · Recording ended" : "";
     const reason = snapshot.end_reason ? ` (${snapshot.end_reason})` : "";
-    status.textContent = `${snapshot.scenario.id} · ${snapshot.status}${reason}${ended} · model ${snapshot.model_source}`;
+    const lost = connectionLost ? " · Connection lost, retrying…" : "";
+    status.textContent = `${snapshot.scenario.id} · ${snapshot.status}${reason}${ended} · model ${snapshot.model_source}${lost}`;
 
     const duration = snapshot.scenario.duration_ms;
     $("timeline").hidden = false;
@@ -81,17 +84,30 @@ export function createSession({ onSnapshot }) {
   }
 
   async function load(id) {
+    clearTimeout(timer);
     try {
       snapshot = await api(`/api/spatial/sessions/${id}`);
-    } catch {
-      snapshot = null;
-      history.replaceState(null, "", location.pathname);
+      connectionLost = false;
+    } catch (err) {
+      if (err.status === 404) {
+        snapshot = null;
+        connectionLost = false;
+        history.replaceState(null, "", location.pathname);
+        render();
+        onSnapshot(null);
+        return;
+      }
+      // Anything else is the network or the server, not the run: keep the run and try again.
+      connectionLost = true;
+      if (snapshot) render();
+      else status.textContent = "Connection lost, retrying…";
+      timer = setTimeout(() => load(id), RETRY_MS);
+      return;
     }
     fetchedAt = performance.now();
     render();
     onSnapshot(snapshot);
     if (snapshot) refreshOpenIncident(snapshot);
-    clearTimeout(timer);
     if (snapshot?.status === "Running") timer = setTimeout(() => load(snapshot.id), POLL_MS);
   }
 
@@ -111,7 +127,11 @@ export function createSession({ onSnapshot }) {
 
   stop.addEventListener("click", async () => {
     if (!snapshot) return;
-    await api(`/api/spatial/sessions/${snapshot.id}/stop`, { method: "POST" });
+    try {
+      await api(`/api/spatial/sessions/${snapshot.id}/stop`, { method: "POST" });
+    } catch (err) {
+      status.textContent = `Stop failed: ${err.message}`;
+    }
     load(snapshot.id);
   });
 

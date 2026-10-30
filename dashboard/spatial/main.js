@@ -240,6 +240,7 @@ window.__spatial = {
   },
   screenOf: (id) => projectToScreen(new THREE.Box3().setFromObject(home.byId.get(id)).getCenter(new THREE.Vector3())),
   markerScreen: (incidentId) => projectToScreen(markers.get(incidentId).position),
+  openIncident,
   fps: () => frames / ((performance.now() - fpsStart) / 1000),
   ready: true,
 };
