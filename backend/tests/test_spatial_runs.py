@@ -9,6 +9,7 @@ import asyncio
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -194,6 +195,38 @@ class SpatialRunsTest(unittest.TestCase):
         detail = asyncio.run(go())
         self.assertEqual(detail["state"], "alerted")
         self.assertEqual(detail["analyses"][0]["status"], "Running")
+
+    def test_stop_returns_normally_when_the_replay_finishes_while_it_waits(self):
+        class SlowStop(SpatialRunManager):
+            def _end_under(self, lock, session_id, status, reason):
+                ended = super()._end_under(lock, session_id, status, reason)
+                if reason == "user_stop":
+                    time.sleep(6.0)  # longer than replaying all of S1, so the replay cleans up first
+                return ended
+
+        async def go():
+            m = SlowStop(session_factory=self.db, realtime=False, run_timeout_seconds=60, segmenter=recorded_sam)
+            sid = await m.start("S1")
+            await m.stop(sid)
+            return sid
+        snap = session_snapshot(asyncio.run(go()), self.db)
+        self.assertEqual((snap["status"], snap["end_reason"]), ("Stopped", "user_stop"))
+
+    def test_an_unreadable_frame_file_is_recorded_as_unavailable(self):
+        def missing(path):
+            raise FileNotFoundError(path)
+        with patch("app.services.spatial_runs._read_frame", missing):
+            [a] = self.analyses_after_run(recorded_sam)
+        self.assertEqual(a["status"], "Unavailable")
+        self.assertIn("frame file unreadable", a["reason"])
+
+    def test_the_analysis_budget_bounds_the_whole_call_and_a_late_answer_is_dropped(self):
+        def slow(image, mime, prompt):
+            time.sleep(0.3)
+            return recorded_sam(image, mime, prompt)
+        [a] = self.analyses_after_run(slow, analysis_timeout_seconds=0.05)
+        self.assertEqual((a["status"], a["output_text"]), ("TimedOut", None))
+        self.assertIn("0.05 s", a["reason"])
 
     def test_s1_walk_produces_no_incident(self):
         snap = self.run_to_end("S1")

@@ -38,6 +38,7 @@ import numpy as np
 from sqlalchemy.exc import IntegrityError
 
 from app.config import (
+    ANALYSIS_TIMEOUT_SECONDS,
     IMU_DETAIL_MAX_SECONDS,
     SCENARIOS_DIR,
     SPATIAL_RUN_TIMEOUT_SECONDS,
@@ -120,6 +121,7 @@ class SpatialRunManager:
         session_factory=None,
         detector: FallDetectionService = fall_detection_service,
         segmenter=None,
+        analysis_timeout_seconds: float = ANALYSIS_TIMEOUT_SECONDS,
     ) -> None:
         self._realtime = realtime
         self._run_timeout = run_timeout_seconds
@@ -127,6 +129,7 @@ class SpatialRunManager:
         self._session_factory = session_factory
         self._detector = detector
         self._segment = segmenter or sam_client.segment
+        self._analysis_timeout = analysis_timeout_seconds
         self._runs: dict[str, asyncio.Task] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._stop_requested: dict[str, asyncio.Event] = {}
@@ -175,9 +178,11 @@ class SpatialRunManager:
         if lock is None:
             self._end(session_id, "Stopped", "user_stop")
             return
+        # Taken before the await: the replay may finish and clear its registry entries meanwhile.
+        stop_requested, task = self._stop_requested.get(session_id), self._runs.get(session_id)
         await asyncio.to_thread(self._end_under, lock, session_id, "Stopped", "user_stop")
-        self._stop_requested[session_id].set()
-        task = self._runs.get(session_id)
+        if stop_requested is not None:
+            stop_requested.set()
         if task is not None and task is not asyncio.current_task():
             await asyncio.gather(task, return_exceptions=True)
 
@@ -319,11 +324,17 @@ class SpatialRunManager:
         _hint(session_id, "action")
 
     async def _analyse(self, session_id: str, lock: threading.Lock, scenario: Scenario, incident_id: int) -> None:
-        analysis_id, request = await asyncio.to_thread(self._open_analysis, lock, session_id, scenario, incident_id)
+        try:
+            analysis_id, request = await asyncio.to_thread(self._open_analysis, lock, session_id, scenario, incident_id)
+        except Exception:
+            logger.exception("could not open the SAM analysis for incident %s", incident_id)
+            return
         if request is None:
             return
         try:
-            result = await asyncio.to_thread(self._segment, *request)
+            # The budget covers the whole call; the worker thread may finish later, and
+            # _close_analysis then finds the row TimedOut and drops the late answer.
+            result = await asyncio.wait_for(asyncio.to_thread(self._segment, *request), self._analysis_timeout)
             outcome = {
                 "status": "Complete" if result.boxes else "NoMatch",
                 "output_text": result.output_text,
@@ -331,6 +342,8 @@ class SpatialRunManager:
                 "duration_ms": result.duration_ms,
                 "model": result.model,
             }
+        except asyncio.TimeoutError:
+            outcome = {"status": "TimedOut", "reason": f"no result within the {self._analysis_timeout} s analysis budget"}
         except sam_client.SamError as err:
             outcome = {"status": err.status, "reason": err.reason}
         except Exception as err:
@@ -358,8 +371,11 @@ class SpatialRunManager:
             elif not analysis.prompt:
                 analysis.status, analysis.reason = "Unavailable", f"zone {location['zone_id']} has no hazard prompt"
             else:
-                image = (SCENARIOS_DIR / scenario.id / frame["url"].split(f"/{scenario.id}/", 1)[1]).read_bytes()
-                request = (image, "image/jpeg", analysis.prompt)
+                path = SCENARIOS_DIR / scenario.id / frame["url"].split(f"/{scenario.id}/", 1)[1]
+                try:
+                    request = (_read_frame(path), "image/jpeg", analysis.prompt)
+                except OSError as err:
+                    analysis.status, analysis.reason = "Unavailable", f"frame file unreadable: {type(err).__name__} {path.name}"
             if request is None:
                 analysis.finished_at = _utcnow()
             db.add(analysis)
@@ -417,6 +433,10 @@ class SpatialRunManager:
             state = row.spatial_state
         _hint(session_id, "action")
         return {"incident_id": incident_id, "applied": True, "incident_state": state, "reason": None}
+
+
+def _read_frame(path) -> bytes:
+    return path.read_bytes()
 
 
 def _settle_analyses(db, session_id: str, status: str, reason: str) -> None:
