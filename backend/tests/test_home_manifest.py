@@ -57,3 +57,23 @@ def test_selectable_objects_are_the_stairs_rug_and_chairs():
     assert sorted(o["id"] for o in MANIFEST["objects"] if o.get("selectable")) == [
         "chair_1", "chair_2", "chair_3", "chair_4", "living_rug",
     ]
+
+
+def test_no_furniture_stands_in_a_doorway():
+    """A walk-through clearance in front of and behind every door and opening."""
+    blocked = []
+    for wall in MANIFEST["walls"]:
+        (ax, az), (bx, bz) = wall["from"], wall["to"]
+        length = ((bx - ax) ** 2 + (bz - az) ** 2) ** 0.5
+        ux, uz = (bx - ax) / length, (bz - az) / length
+        for opening in wall.get("openings", []):
+            if opening["kind"] == "window":
+                continue
+            for o in MANIFEST["objects"]:
+                if o["kind"] in {"rug", "ceiling_lamp"}:
+                    continue
+                dx, dz = o["at"][0] - ax, o["at"][1] - az
+                along, across = dx * ux + dz * uz, abs(dx * -uz + dz * ux)
+                if abs(along - opening["at"]) < opening["width"] / 2 + 0.2 and across < 0.8:
+                    blocked.append(o["id"])
+    assert blocked == []

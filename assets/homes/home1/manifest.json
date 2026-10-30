@@ -1,6 +1,6 @@
 {
   "id": "home1",
-  "version": "1",
+  "version": "2",
   "units": "meters",
   "axes": "Y-up; x east, z south",
   "footprint": { "x": [-6, 6], "z": [-5, 5] },
@@ -68,13 +68,13 @@
     "handrail": { "id": "handrail", "side": "north", "height": 0.9 }
   },
   "objects": [
-    { "id": "sofa", "kind": "sofa", "zone": "living_room", "at": [-3.2, 4.2], "rot": 180 },
-    { "id": "coffee_table", "kind": "coffee_table", "zone": "living_room", "at": [-3.2, 2.9], "rot": 0 },
-    { "id": "living_rug", "kind": "rug", "zone": "living_room", "at": [-3.2, 2.7], "rot": 0, "selectable": true },
-    { "id": "tv_stand", "kind": "tv_stand", "zone": "living_room", "at": [-3.2, 0.35], "rot": 0 },
+    { "id": "sofa", "kind": "sofa", "zone": "living_room", "at": [-2.0, 2.6], "rot": 270 },
+    { "id": "coffee_table", "kind": "coffee_table", "zone": "living_room", "at": [-4.0, 2.6], "rot": 90 },
+    { "id": "living_rug", "kind": "rug", "zone": "living_room", "at": [-3.9, 2.6], "rot": 90, "selectable": true },
+    { "id": "tv_stand", "kind": "tv_stand", "zone": "living_room", "at": [-5.75, 2.6], "rot": 90 },
     { "id": "floor_lamp", "kind": "floor_lamp", "zone": "living_room", "at": [-5.4, 4.4], "rot": 0 },
     { "id": "plant", "kind": "plant", "zone": "living_room", "at": [-0.6, 4.4], "rot": 0 },
-    { "id": "armchair", "kind": "armchair", "zone": "living_room", "at": [-5.2, 2.6], "rot": 90 },
+    { "id": "armchair", "kind": "armchair", "zone": "living_room", "at": [-4.0, 4.4], "rot": 180 },
 
     { "id": "kitchen_counter", "kind": "counter", "zone": "kitchen", "at": [3.6, 4.65], "rot": 180, "length": 3.6 },
     { "id": "sink", "kind": "sink", "zone": "kitchen", "at": [3.0, 4.65], "rot": 180 },
@@ -96,7 +96,7 @@
     { "id": "mirror", "kind": "mirror", "zone": "bathroom", "at": [0.2, -4.92], "rot": 0, "wall_mounted": true },
     { "id": "shower", "kind": "shower", "zone": "bathroom", "at": [0.9, -2.0], "rot": 0 },
 
-    { "id": "shoe_rack", "kind": "shoe_rack", "zone": "hallway", "at": [-5.6, -0.6], "rot": 90 },
+    { "id": "shoe_rack", "kind": "shoe_rack", "zone": "hallway", "at": [-5.1, -1.03], "rot": 0 },
     { "id": "hall_lamp", "kind": "ceiling_lamp", "zone": "hallway", "at": [0.0, -0.6], "rot": 0, "wall_mounted": true },
     { "id": "stair_lamp", "kind": "ceiling_lamp", "zone": "stairs_flight", "at": [3.6, -3.7], "rot": 0, "wall_mounted": true }
   ],
