@@ -26,6 +26,8 @@ Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1,
 - [SUBMISSION.md](SUBMISSION.md) là mô tả dự thi đã thu gọn theo MVP 1.
 - [GATES.md](GATES.md) ghi kết quả đo của Ngày 1 và các thí nghiệm về lớp INSTABILITY.
 - [ACCEPTANCE.md](ACCEPTANCE.md) là bảng nghiệm thu AC01 đến AC12, T1 đến T12 và các số đo đã công bố.
+- [CREDITS.md](CREDITS.md) ghi nguồn và giấy phép của thư viện, model, dữ liệu và asset.
+- [MVP2.md](MVP2.md) là phạm vi MVP 2: người thật, thiết bị thật.
 
 ## Điều gì chạy thật
 

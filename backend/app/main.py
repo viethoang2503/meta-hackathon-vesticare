@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     _startup_logger.info("  ML_CONFIDENCE       = %.0f%%", ML_CONFIDENCE_THRESHOLD * 100)
 
     _startup_logger.info("--- Model artifacts ---")
-    _startup_logger.info("  TFLite model  : %s [%s]", TFLITE_MODEL_PATH, "found" if TFLITE_MODEL_PATH.exists() else "MISSING — heuristic fallback active")
+    _startup_logger.info("  TFLite model  : %s [%s]", TFLITE_MODEL_PATH, "found" if TFLITE_MODEL_PATH.exists() else "not present, the Keras model is loaded instead (see the fall_detection log line)")
     _startup_logger.info("  Scaler params : %s [%s]", SCALER_PARAMS_PATH, "found" if SCALER_PARAMS_PATH.exists() else "MISSING — identity scaler active")
 
     _startup_logger.info("--- Notifications ---")

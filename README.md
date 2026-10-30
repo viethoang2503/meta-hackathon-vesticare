@@ -2,6 +2,19 @@
 
 A wearable IoT system combining AI and sensor data to detect falls and instability events for patients with vestibular disorders. Alerts are sent in real-time via Telegram and logged in a dashboard for review and feedback.
 
+## Spatial demo (hackathon entry)
+
+The hackathon entry is the `/spatial/` page: an authored 3D home, a simulated glasses HUD, real IMU recordings replayed through the fall detector, and real SAM 3.1 and Muse Spark calls. Scope, results and limits are in [`docs/spatial/`](docs/spatial/README.md), with the acceptance table in [`ACCEPTANCE.md`](docs/spatial/ACCEPTANCE.md).
+
+```bash
+cd backend
+pip install -r requirements.txt        # first run only, into a Python 3.12 venv
+echo "MODEL_API_KEY=<your Meta Model API key>" >> .env   # optional; without it SAM and the agent show Failed
+uvicorn app.main:app --host 127.0.0.1 --port 8010
+```
+
+Open `http://127.0.0.1:8010/spatial/`, pick S1 or S2 and press Start. Startup is ready when the log prints `Keras model loaded`. S1 shows the stairs tip and no incident; S2 shows one fall incident with a 7 s "Are you OK?" countdown, then a simulated caregiver alert. Contacts are simulated; set `TELEGRAM_BOT_TOKEN=` empty to make sure no Telegram message is sent.
+
 ## System Overview
 
 ```
