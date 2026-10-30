@@ -61,6 +61,13 @@ Ngày 7 đã xong ngày 2026-10-30. Kết quả:
 - Bộ test: 169 passed.
 - Ghi chú: lời giải thích của agent phản ánh trạng thái lúc agent chạy (ví dụ "wearer response is pending" trước khi hết đếm ngược).
 
+Ngày 8 đã xong ngày 2026-10-30. Tính năng MVP 1 đã khóa. Kết quả:
+
+- Route `/api/sensor/*` dùng `StreamMonitor` theo từng bệnh nhân, cùng luật với spatial replay; INSTABILITY không còn tạo cảnh báo. Cooldown của detector và các hàm rollback đã bị xóa.
+- Đo trên máy thật: 120 FPS trên Apple M3; từ lúc mẫu mở incident tới lúc incident được ghi 42 đến 91 ms. Lần đo đầu cho số âm vì `loop.time()` của uvloop khác mốc với `time.monotonic()`; đã sửa.
+- Ngăn bằng chứng ghi thời điểm và trạng thái incident lúc agent viết lời giải thích.
+- Bảng nghiệm thu AC01 đến AC12 và T1 đến T12: [ACCEPTANCE.md](ACCEPTANCE.md).
+
 ## Ngày 1 có gate bắt buộc
 
 ### G1. Model và ý nghĩa nhãn

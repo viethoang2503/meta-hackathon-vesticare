@@ -1,0 +1,6 @@
+{
+ "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+ "viewport": "1400x900",
+ "overview_idle_fps": 120.0,
+ "s2_running_fps": 120.0
+}

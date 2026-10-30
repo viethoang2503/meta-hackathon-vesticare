@@ -238,6 +238,8 @@ class SpatialRunManager:
         route_state = {"zone": None, "last_shown_ms": {}}
         loop = asyncio.get_running_loop()
         started = loop.time()
+        # Latency is measured against time.monotonic(); uvloop's loop.time() uses a different epoch.
+        started_mono = time.monotonic()
         cursor, total = 0, len(scenario.samples)
         try:
             while True:
@@ -249,7 +251,7 @@ class SpatialRunManager:
                 if due > cursor:
                     ingested = await asyncio.to_thread(
                         self._ingest, lock, session_id, scenario, monitor, incident_rows, route_state, cursor, due,
-                        started if self._realtime else None,
+                        started_mono if self._realtime else None,
                     )
                     if ingested is None:
                         return

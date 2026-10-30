@@ -25,6 +25,7 @@ Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1,
 - [PLAN.md](PLAN.md) phân bổ 10 ngày và các gate trước khi triển khai tiếp.
 - [SUBMISSION.md](SUBMISSION.md) là mô tả dự thi đã thu gọn theo MVP 1.
 - [GATES.md](GATES.md) ghi kết quả đo của Ngày 1 và các thí nghiệm về lớp INSTABILITY.
+- [ACCEPTANCE.md](ACCEPTANCE.md) là bảng nghiệm thu AC01 đến AC12, T1 đến T12 và các số đo đã công bố.
 
 ## Điều gì chạy thật
 
