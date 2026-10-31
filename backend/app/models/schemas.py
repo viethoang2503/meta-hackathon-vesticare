@@ -112,11 +112,12 @@ class AlertEvent(Base):
 
 
 class SpatialSession(Base):
-    """One Start of a replay scenario. Status: Running | Stopped | Interrupted."""
+    """One Start of a replay scenario or of a live device. Status: Running | Stopped | Interrupted."""
     __tablename__ = "spatial_sessions"
 
     id = Column(String, primary_key=True)
-    scenario_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="replay")  # replay | live
+    scenario_id = Column(String, nullable=True)  # null for live sessions
     status = Column(String, nullable=False, index=True)
     end_reason = Column(String, nullable=True)  # user_stop | timeout | session_interrupted
     started_at = Column(DateTime, nullable=False)
@@ -124,6 +125,12 @@ class SpatialSession(Base):
     source_offset_ms = Column(Integer, nullable=False, default=0)
     recording_ended = Column(Boolean, nullable=False, default=False)
     model_source = Column(String, nullable=False)
+    # Live sessions (docs/spatial/MVP2_ARCHITECTURE.md). Null on replay sessions.
+    patient_id = Column(Integer, nullable=True)
+    device_id = Column(String, nullable=True)
+    config_snapshot = Column(Text, nullable=True)  # JSON, pinned at Start
+    live_stats = Column(Text, nullable=True)  # JSON from LiveStream.stats()
+    last_sample_at = Column(DateTime, nullable=True)
 
 
 class SpatialAnalysis(Base):

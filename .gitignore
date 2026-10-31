@@ -58,3 +58,6 @@ desktop.ini
 
 # U0 probe raw audio and room photos (backend/app/api/probe.py)
 backend/probe_data/
+
+# MVP 2 live session IMU journals (backend/app/services/spatial_runs.py)
+backend/live_data/

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.spatial_runs import (
     RunAlreadyActive,
@@ -29,10 +29,15 @@ class StartRequest(BaseModel):
     scenario_id: str
 
 
+class StartLiveRequest(BaseModel):
+    patient_id: int = Field(gt=0)
+    device_id: str = Field(min_length=1, max_length=64)
+
+
 class LocationOut(BaseModel):
     source: str
-    x: float
-    z: float
+    x: float | None
+    z: float | None
     zone_id: str | None
     zone_label: str | None
     fall_exposure: bool
@@ -68,7 +73,8 @@ class ActionOut(BaseModel):
 
 class SessionSnapshot(BaseModel):
     id: str
-    scenario_id: str
+    kind: str = "replay"
+    scenario_id: str | None
     status: str
     end_reason: str | None
     started_at: datetime
@@ -76,7 +82,8 @@ class SessionSnapshot(BaseModel):
     source_offset_ms: int
     recording_ended: bool
     model_source: str
-    scenario: dict
+    scenario: dict | None
+    live: dict | None = None
     incidents: list[IncidentOut]
     actions: list[ActionOut]
     advisories: list[dict]
@@ -115,6 +122,15 @@ async def start_session(body: StartRequest):
         session_id = await spatial_runs.start(body.scenario_id)
     except ScenarioNotFound:
         raise HTTPException(status_code=404, detail=f"Unknown scenario {body.scenario_id!r}")
+    except RunAlreadyActive as active:
+        raise HTTPException(status_code=409, detail=f"Session {active.session_id} is still running; stop it first")
+    return _snapshot_or_404(session_id)
+
+
+@router.post("/live", response_model=SessionSnapshot, status_code=201)
+async def start_live(body: StartLiveRequest):
+    try:
+        session_id = await spatial_runs.start_live(body.patient_id, body.device_id)
     except RunAlreadyActive as active:
         raise HTTPException(status_code=409, detail=f"Session {active.session_id} is still running; stop it first")
     return _snapshot_or_404(session_id)

@@ -148,3 +148,9 @@ FIXES_LIBRARY_PATH = PROJECT_ROOT / "assets" / "fixes" / "library.json"
 # Ngay 7: loi nhac theo zone va nguoi cham soc (docs/spatial/SPEC.md, bang tham so)
 ADVISORY_COOLDOWN_SECONDS = 60
 CAREGIVER_ACK_TIMEOUT_SECONDS = 20
+
+# MVP 2 live session (docs/spatial/MVP2.md, Tham số P0). Snapshotted per session at Start.
+LIVE_WEARER_CANCEL_SECONDS = 30
+LIVE_RUN_TIMEOUT_SECONDS = 3600
+LIVE_DEVICE_SILENT_SECONDS = 3
+LIVE_DATA_DIR = PROJECT_ROOT / "backend" / "live_data"

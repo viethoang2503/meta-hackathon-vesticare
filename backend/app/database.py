@@ -74,6 +74,13 @@ def _upgrade_db() -> None:
         "ALTER TABLE alert_events ADD COLUMN caregiver_deadline_at DATETIME",
         # A day-5 spatial_analyses table keeps incident_id NOT NULL; advisory analyses need a fresh table.
         "ALTER TABLE spatial_analyses ADD COLUMN advisory_id INTEGER",
+        # MVP 2 live sessions
+        "ALTER TABLE spatial_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'replay'",
+        "ALTER TABLE spatial_sessions ADD COLUMN patient_id INTEGER",
+        "ALTER TABLE spatial_sessions ADD COLUMN device_id TEXT",
+        "ALTER TABLE spatial_sessions ADD COLUMN config_snapshot TEXT",
+        "ALTER TABLE spatial_sessions ADD COLUMN live_stats TEXT",
+        "ALTER TABLE spatial_sessions ADD COLUMN last_sample_at DATETIME",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -83,6 +90,31 @@ def _upgrade_db() -> None:
             except Exception:
                 # Column already exists or other harmless error — skip
                 conn.rollback()
+    _allow_null_scenario_id()
+
+
+def _allow_null_scenario_id() -> None:
+    """A live session has no scenario. SQLite cannot drop NOT NULL in place, so an MVP 1
+    spatial_sessions table is rebuilt with SQLite's create-copy-drop-rename procedure.
+    Other tables reference it by name, which the rename keeps."""
+    from sqlalchemy import text
+    from sqlalchemy.schema import CreateTable
+
+    from app.models.schemas import SpatialSession
+
+    with engine.connect() as conn:
+        columns = conn.execute(text("PRAGMA table_info(spatial_sessions)")).fetchall()
+        if not any(c[1] == "scenario_id" and c[3] for c in columns):
+            return
+        names = ", ".join(c[1] for c in columns)
+        ddl = str(CreateTable(SpatialSession.__table__).compile(engine))
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        conn.execute(text(ddl.replace("CREATE TABLE spatial_sessions", "CREATE TABLE spatial_sessions_new", 1)))
+        conn.execute(text(f"INSERT INTO spatial_sessions_new ({names}) SELECT {names} FROM spatial_sessions"))
+        conn.execute(text("DROP TABLE spatial_sessions"))
+        conn.execute(text("ALTER TABLE spatial_sessions_new RENAME TO spatial_sessions"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_spatial_sessions_status ON spatial_sessions (status)"))
+        conn.commit()
 
 
 def init_db():

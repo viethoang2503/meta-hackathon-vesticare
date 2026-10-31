@@ -25,7 +25,9 @@ from app.database import get_db
 from app.models.schemas import AlertEvent, ForecastResult, SensorData
 from app.services.broadcaster import broadcaster
 from app.services.fall_detection import PredictionResult, fall_detection_service
+from app.services.live_stream import DeviceSample
 from app.services.monitoring import IncidentEvent, StreamMonitor
+from app.services.spatial_runs import LiveRunEnded, spatial_runs
 from app.services.telegram_bot import send_fall_alert
 
 
@@ -67,6 +69,9 @@ class SensorReadingPayload(BaseModel):
 
 class BatchSensorReadingPayload(BaseModel):
     timestamp: datetime | None = None
+    # Required while the patient has a live spatial session (docs/spatial/MVP2_ARCHITECTURE.md).
+    sample_seq: int | None = Field(default=None, ge=0)
+    device_ms: int | None = Field(default=None, ge=0)
     ax: float
     ay: float
     az: float
@@ -83,6 +88,9 @@ class SensorBatchPayload(BaseModel):
     firmware_version: str | None = None
     ntp_synced: bool | None = None
     transport: Literal["wifi", "usb"] | None = None
+    boot_id: str | None = Field(default=None, max_length=64)
+    batch_id: int | None = Field(default=None, ge=0)
+    dropped_at_source: int | None = Field(default=None, ge=0)  # cumulative since boot
 
     @field_validator("samples")
     @classmethod
@@ -464,12 +472,34 @@ def ingest_sensor_data(
     return response
 
 
+def _ingest_live_batch(session_id: str, payload: SensorBatchPayload) -> dict:
+    """A live session owns this patient's samples: one detector and one policy, in spatial_runs.
+    The legacy alert path does not see them."""
+    if payload.device_id != spatial_runs.live_device(session_id):
+        raise HTTPException(status_code=409, detail="This device is not the one paired with the live session")
+    if not payload.boot_id or any(s.sample_seq is None or s.device_ms is None for s in payload.samples):
+        raise HTTPException(status_code=422, detail="A live session needs boot_id and sample_seq/device_ms on every sample")
+    samples = [
+        DeviceSample(s.sample_seq, s.device_ms, _build_sample_vector(
+            ax=s.ax, ay=s.ay, az=s.az, gx=s.gx, gy=s.gy, gz=s.gz, svm=_ensure_svm(s.ax, s.ay, s.az, s.svm)))
+        for s in payload.samples
+    ]
+    try:
+        return spatial_runs.ingest_live(session_id, payload.boot_id, samples, payload.dropped_at_source or 0)
+    except LiveRunEnded:
+        raise HTTPException(status_code=409, detail="The live session has ended")
+
+
 @router.post("/batch")
 def ingest_sensor_batch(
     payload: SensorBatchPayload,
     db: Session = Depends(get_db),
     _: None = Depends(verify_device_token),
 ):
+    live_session = spatial_runs.live_session_for(payload.patient_id)
+    if live_session is not None:
+        return _ingest_live_batch(live_session, payload)
+
     prediction = PredictionResult(
         state="BUFFERING",
         window_ready=False,

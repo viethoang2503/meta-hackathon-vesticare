@@ -38,8 +38,9 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from sqlalchemy.exc import IntegrityError
@@ -54,9 +55,15 @@ from app.config import (
     ANALYSIS_TIMEOUT_SECONDS,
     FIXES_LIBRARY_PATH,
     IMU_DETAIL_MAX_SECONDS,
+    LIVE_DATA_DIR,
+    LIVE_DEVICE_SILENT_SECONDS,
+    LIVE_RUN_TIMEOUT_SECONDS,
+    LIVE_WEARER_CANCEL_SECONDS,
+    SAMPLING_RATE,
     SCENARIOS_DIR,
     SPATIAL_RUN_TIMEOUT_SECONDS,
     WEARER_CANCEL_WINDOW_SECONDS,
+    WINDOW_SIZE,
 )
 from app import database
 from app.models.schemas import AlertEvent, SpatialAction, SpatialAnalysis, SpatialSession
@@ -64,6 +71,7 @@ from app.services.broadcaster import broadcaster
 from app.services.fall_detection import FallDetectionService, fall_detection_service
 from app.services import muse_client, sam_client
 from app.services.incident_agent import run_agent
+from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
 from app.services.monitoring import StreamMonitor
 from app.services.scene_context import frame_near, home_manifest, location_at
 
@@ -81,6 +89,29 @@ class RunAlreadyActive(Exception):
     def __init__(self, session_id: str):
         super().__init__(session_id)
         self.session_id = session_id
+
+
+class LiveRunEnded(Exception):
+    pass
+
+
+# A live session has no measured position (MVP2.md, Mục tiêu và phạm vi).
+UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
+JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
+
+
+@dataclass
+class LiveRun:
+    """In-memory state of one live session. `ingest_lock` orders batches; the run lock guards DB writes."""
+
+    patient_id: int
+    device_id: str
+    wearer_cancel: float
+    monitor: StreamMonitor
+    journal: Path
+    stream: LiveStream | None = None
+    incident_rows: dict = field(default_factory=dict)
+    ingest_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 @dataclass(frozen=True)
@@ -126,6 +157,41 @@ def _hint(session_id: str, change: str) -> None:
     broadcaster.publish({"event_type": "spatial_session", "session_id": session_id, "change": change})
 
 
+def _persist_events(db, session_id, patient_id, events, incident_rows, wearer_cancel) -> list[int]:
+    """Stores what StreamMonitor reported; returns the ids of incidents opened now. Caller holds the run lock."""
+    opened = []
+    for event in events:
+        if event is None:
+            continue
+        inc = event.incident
+        if event.kind == "opened":
+            row = AlertEvent(
+                patient_id=patient_id,
+                timestamp=_utcnow(),
+                alert_type="FALL",
+                confidence=inc.max_fall_probability,
+                peak_svm=inc.peak_svm,
+                is_acknowledged=False,
+                notification_status="pending",
+                spatial_state="awaiting_wearer",
+                wearer_deadline_at=_utcnow() + timedelta(seconds=wearer_cancel),
+                session_id=session_id,
+                source_start_ms=inc.source_start_ms,
+                source_end_ms=inc.source_end_ms,
+                decision_source=inc.decision_source,
+            )
+            db.add(row)
+            db.flush()
+            incident_rows[inc.index] = row.id
+            opened.append(row.id)
+        else:
+            row = db.get(AlertEvent, incident_rows[inc.index])
+            row.source_end_ms = inc.source_end_ms
+            row.confidence = inc.max_fall_probability
+            row.peak_svm = inc.peak_svm
+    return opened
+
+
 class SpatialRunManager:
     def __init__(
         self,
@@ -140,6 +206,9 @@ class SpatialRunManager:
         analysis_timeout_seconds: float = ANALYSIS_TIMEOUT_SECONDS,
         caregiver_ack_seconds: float = CAREGIVER_ACK_TIMEOUT_SECONDS,
         advisory_cooldown_seconds: float = ADVISORY_COOLDOWN_SECONDS,
+        live_wearer_cancel_seconds: float = LIVE_WEARER_CANCEL_SECONDS,
+        live_run_timeout_seconds: float = LIVE_RUN_TIMEOUT_SECONDS,
+        live_data_dir: Path | None = None,
     ) -> None:
         self._realtime = realtime
         self._run_timeout = run_timeout_seconds
@@ -155,6 +224,11 @@ class SpatialRunManager:
         self._locks: dict[str, threading.Lock] = {}
         self._stop_requested: dict[str, asyncio.Event] = {}
         self._dispatches: set[asyncio.Task] = set()
+        self._live_wearer_cancel = live_wearer_cancel_seconds
+        self._live_run_timeout = live_run_timeout_seconds
+        self._live_data_dir = live_data_dir
+        self._live: dict[str, LiveRun] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _db(self):
         # Looked up per call: tests swap database.SessionLocal after this module is imported.
@@ -214,6 +288,106 @@ class SpatialRunManager:
             await asyncio.gather(task, return_exceptions=True)
         if self._dispatches:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
+
+    async def start_live(self, patient_id: int, device_id: str) -> str:
+        """Start a live session for one device. Samples arrive through ingest_live; the boot id is
+        pinned by the first batch. One active run at a time, replay or live."""
+        with self._db() as db:
+            active = db.query(SpatialSession).filter(SpatialSession.status == "Running").first()
+            if active is not None:
+                raise RunAlreadyActive(active.id)
+            session_id = uuid.uuid4().hex
+            config = {
+                "wearer_cancel_seconds": self._live_wearer_cancel,
+                "caregiver_ack_seconds": self._caregiver_ack,
+                "sampling_rate_hz": SAMPLING_RATE,
+                "window_size": WINDOW_SIZE,
+                "max_sample_gap_ms": MAX_SAMPLE_GAP_MS,
+                "device_silent_seconds": LIVE_DEVICE_SILENT_SECONDS,
+                "model_source": self._detector.model_source,
+                "notification_mode": "simulated",
+            }
+            db.add(SpatialSession(
+                id=session_id, kind="live", scenario_id=None, patient_id=patient_id, device_id=device_id,
+                status="Running", started_at=_utcnow(), source_offset_ms=0, recording_ended=False,
+                model_source=self._detector.model_source, config_snapshot=json.dumps(config),
+                live_stats=json.dumps({"readiness": "waiting_for_device"}),
+            ))
+            db.commit()
+        self._loop = asyncio.get_running_loop()
+        self._locks[session_id] = threading.Lock()
+        self._stop_requested[session_id] = asyncio.Event()
+        self._live[session_id] = LiveRun(
+            patient_id=patient_id, device_id=device_id, wearer_cancel=self._live_wearer_cancel,
+            monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
+            journal=_journal_path(session_id, self._live_data_dir),
+        )
+        self._runs[session_id] = asyncio.create_task(self._live_watch(session_id))
+        _hint(session_id, "started")
+        return session_id
+
+    async def _live_watch(self, session_id: str) -> None:
+        """Holds a live session open until Stop or the run timeout; there is no replay to drive."""
+        lock, stop_requested = self._locks[session_id], self._stop_requested[session_id]
+        try:
+            await asyncio.wait_for(stop_requested.wait(), self._live_run_timeout)
+        except asyncio.TimeoutError:
+            await asyncio.to_thread(self._end_under, lock, session_id, "Stopped", "timeout")
+        finally:
+            run = self._live.pop(session_id, None)
+            if run is not None:
+                with run.ingest_lock:
+                    run.monitor.close()
+            self._runs.pop(session_id, None)
+            self._locks.pop(session_id, None)
+            self._stop_requested.pop(session_id, None)
+
+    def live_session_for(self, patient_id: int) -> str | None:
+        return next((sid for sid, run in self._live.items() if run.patient_id == patient_id), None)
+
+    def live_device(self, session_id: str) -> str | None:
+        run = self._live.get(session_id)
+        return run.device_id if run else None
+
+    def ingest_live(self, session_id: str, boot_id: str, samples: list[DeviceSample],
+                    dropped_at_source: int = 0, received_at: datetime | None = None) -> dict:
+        """Called from the sensor route's worker thread. Feeds new samples to the session's detector,
+        stores opened incidents, and hands their countdowns to the event loop after the commit."""
+        run, lock = self._live.get(session_id), self._locks.get(session_id)
+        if run is None or lock is None:
+            raise LiveRunEnded(session_id)
+        received_at = received_at or _utcnow()
+        with run.ingest_lock:
+            if run.stream is None:
+                run.stream = LiveStream(boot_id)
+            rejected = None
+            try:
+                steps = run.stream.accept(boot_id, samples, dropped_at_source)
+            except BatchRejected as err:
+                steps, rejected = [], err.reason
+            events = []
+            for step in steps:
+                if step.reset is not None:
+                    run.monitor.reset_window()
+                events.append(run.monitor.add_sample(step.source_ms, step.values))
+            _append_journal(run.journal, steps, received_at)
+            stats = run.stream.stats()
+            with lock, self._db() as db:
+                session = db.get(SpatialSession, session_id)
+                if session is None or session.status != "Running":
+                    raise LiveRunEnded(session_id)
+                opened = _persist_events(db, session_id, run.patient_id, events, run.incident_rows, run.wearer_cancel)
+                if stats["last_source_ms"] is not None:
+                    session.source_offset_ms = stats["last_source_ms"]
+                session.last_sample_at = received_at
+                session.live_stats = json.dumps(stats)
+                db.commit()
+        _hint(session_id, "incident" if opened else "progress")
+        for incident_id in opened:
+            self._loop.call_soon_threadsafe(
+                self._background, self._wearer_countdown(session_id, lock, incident_id, run.wearer_cancel))
+        return {"session_id": session_id, "accepted": len(steps), "rejected": rejected,
+                "readiness": stats["readiness"], "incidents_opened": opened}
 
     def _end_under(self, lock: threading.Lock, session_id: str, status: str, reason: str) -> bool:
         with lock:
@@ -302,36 +476,7 @@ class SpatialRunManager:
                 db.flush()
                 if shown:
                     shown_advisories.append((action.id, source_ms, zone))
-            opened = []
-            for event in events:
-                if event is None:
-                    continue
-                inc = event.incident
-                if event.kind == "opened":
-                    row = AlertEvent(
-                        patient_id=scenario.patient_id,
-                        timestamp=_utcnow(),
-                        alert_type="FALL",
-                        confidence=inc.max_fall_probability,
-                        peak_svm=inc.peak_svm,
-                        is_acknowledged=False,
-                        notification_status="pending",
-                        spatial_state="awaiting_wearer",
-                        wearer_deadline_at=_utcnow() + timedelta(seconds=self._wearer_cancel),
-                        session_id=session_id,
-                        source_start_ms=inc.source_start_ms,
-                        source_end_ms=inc.source_end_ms,
-                        decision_source=inc.decision_source,
-                    )
-                    db.add(row)
-                    db.flush()
-                    incident_rows[inc.index] = row.id
-                    opened.append(row.id)
-                else:
-                    row = db.get(AlertEvent, incident_rows[inc.index])
-                    row.source_end_ms = inc.source_end_ms
-                    row.confidence = inc.max_fall_probability
-                    row.peak_svm = inc.peak_svm
+            opened = _persist_events(db, session_id, scenario.patient_id, events, incident_rows, self._wearer_cancel)
             session.source_offset_ms = int(scenario.source_ms[end - 1])
             session.recording_ended = end >= len(scenario.samples)
             if started is not None and opened:
@@ -432,9 +577,11 @@ class SpatialRunManager:
         self._dispatches.add(task)
         task.add_done_callback(self._dispatches.discard)
 
-    async def _wearer_countdown(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
-        await asyncio.sleep(self._wearer_cancel)
-        if await asyncio.to_thread(self._alert_if_unanswered, lock, session_id, incident_id):
+    async def _wearer_countdown(self, session_id: str, lock: threading.Lock, incident_id: int,
+                                wearer_cancel: float | None = None) -> None:
+        wearer_cancel = self._wearer_cancel if wearer_cancel is None else wearer_cancel
+        await asyncio.sleep(wearer_cancel)
+        if await asyncio.to_thread(self._alert_if_unanswered, lock, session_id, incident_id, wearer_cancel):
             await asyncio.sleep(self._caregiver_ack)
             await asyncio.to_thread(self._escalate_if_unacknowledged, lock, session_id, incident_id)
 
@@ -486,7 +633,7 @@ class SpatialRunManager:
         _hint(session_id, "action")
         return {**result, "applied": True, "reason": None}
 
-    def _alert_if_unanswered(self, lock: threading.Lock, session_id: str, incident_id: int) -> bool:
+    def _alert_if_unanswered(self, lock: threading.Lock, session_id: str, incident_id: int, wearer_cancel: float) -> bool:
         """Simulated sink: the notification is the action-log row. Nothing leaves the process."""
         with lock, self._db() as db:
             session = db.get(SpatialSession, session_id)
@@ -502,7 +649,7 @@ class SpatialRunManager:
                 incident_id=incident_id,
                 kind="notify",
                 target="contact_1",
-                detail=json.dumps({"channel": "simulated", "after_wearer_window_s": self._wearer_cancel}),
+                detail=json.dumps({"channel": "simulated", "after_wearer_window_s": wearer_cancel}),
                 created_at=_utcnow(),
             ))
             db.commit()
@@ -683,6 +830,46 @@ def _evidence_bundle(scenario: Scenario, row, sam, others) -> dict:
     }
 
 
+def _append_journal(path: Path, steps, received_at: datetime) -> None:
+    """The live session's own IMU record; incident_detail reads it back."""
+    if not steps:
+        return
+    received = round(received_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    new = not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        if new:
+            f.write(",".join(JOURNAL_COLUMNS) + "\n")
+        for st in steps:
+            f.write(f"{st.source_ms},{st.seq},{st.device_ms},{received}," + ",".join(f"{float(v):.5f}" for v in st.values) + "\n")
+
+
+def _journal_path(session_id: str, live_data_dir: Path | None = None) -> Path:
+    # Looked up per call so tests can point LIVE_DATA_DIR at a temporary folder.
+    return (live_data_dir or LIVE_DATA_DIR) / session_id / "imu.csv"
+
+
+def _live_json(s) -> dict:
+    stats = json.loads(s.live_stats or "{}")
+    received_any = s.last_sample_at is not None
+    silent = s.status == "Running" and (
+        not received_any or (_utcnow() - s.last_sample_at).total_seconds() > LIVE_DEVICE_SILENT_SECONDS)
+    if silent:
+        label = "Device silent" if received_any else "Waiting for device"
+    else:
+        label = {"warming_up": "Warming up", "detection_unavailable": "Detection unavailable",
+                 "ready": "Detector ready"}.get(stats.get("readiness"), "Waiting for device")
+    return {"patient_id": s.patient_id, "device_id": s.device_id, "last_sample_at": s.last_sample_at,
+            "device_silent": silent, "status_label": label,
+            "config": json.loads(s.config_snapshot or "{}"), **stats}
+
+
+def _read_journal(path: Path) -> np.ndarray:
+    if not path.exists():
+        return np.zeros((0, len(JOURNAL_COLUMNS)))
+    return np.loadtxt(path, delimiter=",", skiprows=1, ndmin=2)
+
+
 def _read_frame(path) -> bytes:
     return path.read_bytes()
 
@@ -717,7 +904,9 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
         s = db.get(SpatialSession, session_id)
         if s is None:
             return None
-        scenario_meta = load_scenario(s.scenario_id).meta
+        live = s.kind == "live"
+        scenario_meta = None if live else load_scenario(s.scenario_id).meta
+        where = (lambda ms: UNKNOWN_LOCATION) if live else (lambda ms: location_at(scenario_meta, ms))
         analysis_statuses: dict[int, list[str]] = {}
         advisory_sam: dict[int, SpatialAnalysis] = {}
         for a in db.query(SpatialAnalysis).filter(SpatialAnalysis.session_id == session_id).order_by(SpatialAnalysis.id):
@@ -739,6 +928,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
         )
         return {
             "id": s.id,
+            "kind": s.kind,
             "scenario_id": s.scenario_id,
             "status": s.status,
             "end_reason": s.end_reason,
@@ -747,7 +937,8 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
             "source_offset_ms": s.source_offset_ms,
             "recording_ended": s.recording_ended,
             "model_source": s.model_source,
-            "scenario": {k: scenario_meta[k] for k in ("id", "title", "duration_ms", "home", "location", "route")},
+            "scenario": None if live else {k: scenario_meta[k] for k in ("id", "title", "duration_ms", "home", "location", "route")},
+            "live": _live_json(s) if live else None,
             "incidents": [
                 {
                     "id": i.id,
@@ -760,7 +951,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                     "is_acknowledged": i.is_acknowledged,
                     "notification_status": i.notification_status,
                     "state": i.spatial_state,
-                    "location": location_at(scenario_meta, i.source_start_ms),
+                    "location": where(i.source_start_ms),
                     "analysis_status": ",".join(analysis_statuses.get(i.id, [])) or None,
                     "latency_ms": i.latency_ms,
                     "acknowledged_at": i.acknowledged_at,
@@ -770,7 +961,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
                 for i in incidents
             ],
             "actions": _actions_json(actions),
-            "advisories": [_advisory_json(a, advisory_sam.get(a.id), scenario_meta) for a in actions if a.kind == "advisory"],
+            "advisories": [] if live else [_advisory_json(a, advisory_sam.get(a.id), scenario_meta) for a in actions if a.kind == "advisory"],
         }
 
 
@@ -811,11 +1002,22 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
             .order_by(SpatialAnalysis.id)
             .all()
         )
-        scenario = load_scenario(session.scenario_id)
+        live = session.kind == "live"
+        if live:
+            table = _read_journal(_journal_path(session.id))
+            source_ms, samples = table[:, 0].astype(np.int64), table[:, 4:]
+            location, imu_source, segments = UNKNOWN_LOCATION, "ESP32 waist IMU", []
+            frame = {"status": "Unavailable", "reason": "No camera frames in a live session yet",
+                     "source": "Phone camera at eye height (glasses proxy)"}
+        else:
+            scenario = load_scenario(session.scenario_id)
+            source_ms, samples = scenario.source_ms, scenario.samples
+            location, imu_source = location_at(scenario.meta, row.source_start_ms), "Scenario-paired recording"
+            segments, frame = scenario.meta["segments"], frame_near(session.scenario_id, row.source_start_ms)
         half = IMU_DETAIL_MAX_SECONDS * 1000 // 2
         lo, hi = row.source_start_ms - half, row.source_start_ms + half
-        mask = (scenario.source_ms >= lo) & (scenario.source_ms <= hi)
-        imu = [[int(ms), *[round(float(v), 4) for v in sample]] for ms, sample in zip(scenario.source_ms[mask], scenario.samples[mask])]
+        mask = (source_ms >= lo) & (source_ms <= hi)
+        imu = [[int(ms), *[round(float(v), 4) for v in sample]] for ms, sample in zip(source_ms[mask], samples[mask])]
         return {
             "id": row.id,
             "session_id": row.session_id,
@@ -831,13 +1033,14 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
             "acknowledged_at": row.acknowledged_at,
             "wearer_deadline_at": row.wearer_deadline_at,
             "caregiver_deadline_at": row.caregiver_deadline_at,
-            "location": location_at(scenario.meta, row.source_start_ms),
-            "frame": frame_near(session.scenario_id, row.source_start_ms),
+            "kind": session.kind,
+            "location": location,
+            "frame": frame,
             "imu": {
-                "source": "Scenario-paired recording",
+                "source": imu_source,
                 "columns": ["source_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"],
                 "units": {"acc": "g", "gyro": "deg/s", "svm": "g"},
-                "segments": scenario.meta["segments"],
+                "segments": segments,
                 "samples": imu,
             },
             "actions": _actions_json(actions),

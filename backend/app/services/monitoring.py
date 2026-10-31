@@ -149,6 +149,15 @@ class StreamMonitor:
         self.incidents.append(draft)
         return IncidentEvent("opened", draft)
 
+    def reset_window(self) -> None:
+        """A gap in a live device stream: the detector window and any fall candidate end here.
+        Opened incidents stay; a candidate cut short is kept in `rejected` for the record."""
+        self.detector.reset_patient(self.stream_key)
+        if self._candidate is not None:
+            self.rejected.append(self._candidate)
+        self._candidate = None
+        self._since_candidate = deque()
+
     def close(self) -> None:
         self.detector.reset_patient(self.stream_key)
 
