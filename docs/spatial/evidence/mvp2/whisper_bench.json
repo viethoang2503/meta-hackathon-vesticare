@@ -1,0 +1,86 @@
+[
+ {
+  "model": "base",
+  "file": "en_help.wav",
+  "ms": 339,
+  "audio_s": 2.99,
+  "text": "I fell down, help me, call an ambulance."
+ },
+ {
+  "model": "base",
+  "file": "en_hip.wav",
+  "ms": 361,
+  "audio_s": 2.79,
+  "text": "I fell in my hip hurts, please call my daughter."
+ },
+ {
+  "model": "base",
+  "file": "en_ok.wav",
+  "ms": 307,
+  "audio_s": 0.76,
+  "text": "I'm okay."
+ },
+ {
+  "model": "base",
+  "file": "vi_help.wav",
+  "ms": 339,
+  "audio_s": 2.9,
+  "text": "Tôi bị ngá rồi, gọi cấp kiếu giúp tôi."
+ },
+ {
+  "model": "base",
+  "file": "vi_notok.wav",
+  "ms": 319,
+  "audio_s": 2.08,
+  "text": "Tôi không ủng, đau chân quá."
+ },
+ {
+  "model": "base",
+  "file": "vi_ok.wav",
+  "ms": 941,
+  "audio_s": 0.65,
+  "text": "Thôi ổn"
+ },
+ {
+  "model": "small",
+  "file": "en_help.wav",
+  "ms": 1076,
+  "audio_s": 2.99,
+  "text": "I fell down. Help me. Call an ambulance."
+ },
+ {
+  "model": "small",
+  "file": "en_hip.wav",
+  "ms": 1111,
+  "audio_s": 2.79,
+  "text": "I fell and my hip hurts. Please call my daughter."
+ },
+ {
+  "model": "small",
+  "file": "en_ok.wav",
+  "ms": 997,
+  "audio_s": 0.76,
+  "text": "I'm okay."
+ },
+ {
+  "model": "small",
+  "file": "vi_help.wav",
+  "ms": 1159,
+  "audio_s": 2.9,
+  "text": "Tôi bị ngã rồi, gọi cấp cứu giúp tôi."
+ },
+ {
+  "model": "small",
+  "file": "vi_notok.wav",
+  "ms": 1152,
+  "audio_s": 2.08,
+  "text": "Tôi không ổn, đau chân quá."
+ },
+ {
+  "model": "small",
+  "file": "vi_ok.wav",
+  "ms": 1037,
+  "audio_s": 0.65,
+  "text": "Tôi ồn."
+ }
+]

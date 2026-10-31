@@ -9,7 +9,10 @@ test("a clear I'm OK in English or Vietnamese cancels", () => {
 });
 
 test("asking for help wins even when the sentence also contains ok", () => {
-  for (const said of ["help", "I'm not okay", "tôi không ổn", "cứu tôi với", "đau quá", "I can't get up"]) {
+  for (const said of [
+    "help", "I'm not okay", "tôi không ổn", "cứu tôi với", "đau quá", "I can't get up",
+    "I fell and my hip hurts. Please call my daughter.", "I'm okay, call my son", "Tôi bị ngã rồi, gọi cấp cứu giúp tôi.",
+  ]) {
     assert.equal(classifyReply(said), "help", said);
   }
 });

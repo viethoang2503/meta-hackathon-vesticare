@@ -2,9 +2,12 @@
 // anything unclear keeps the countdown running, because a wrong cancel leaves
 // a real fall unreported while a wrong alert only costs the caregiver a check.
 
+// Asking for anyone to be called counts as help too, so "I'm OK, call my
+// daughter" alerts: the safe side of an ambiguous sentence.
 const HELP = [
-  "help", "not ok", "not okay", "not fine", "hurt", "pain", "can't get up", "cannot get up",
-  "cuu", "giup", "khong on", "dau", "khong dung day duoc",
+  "help", "not ok", "not okay", "not fine", "hurt", "hurts", "pain", "can't get up", "cannot get up",
+  "fell", "fallen", "call", "ambulance", "emergency",
+  "cuu", "giup", "khong on", "dau", "khong dung day duoc", "nga", "goi", "cap cuu",
 ];
 const OK = [
   "i'm ok", "im ok", "i am ok", "i'm okay", "im okay", "i am okay", "i'm fine", "im fine", "i am fine",
