@@ -34,3 +34,20 @@ A trial passes when the audio is decodable, the frame is about 640×480, the spe
 - Round-trip time and STT time.
 
 The machine voice and a scripted sentence do not count toward M7.
+
+## Result on 2026-10-31
+
+iPhone on iOS 18.7, Safari, held by hand at the laptop. The forehead mount is not tested yet. All numbers below come from `trials.jsonl`.
+
+| Check | Result |
+|---|---|
+| Recorder format | `audio/mp4; codecs=mp4a.40.2` (AAC). All 6 turns decoded, 4.0 s each |
+| Speech events | Start and end fired on every trial. Listening began 500 to 516 ms after the end event |
+| Frame | 640×480 on every trial |
+| Wake lock | Granted |
+| STT time | Whisper small took 0.9 to 1.1 s per pass on 5 of 6 turns, and 3.1 s on one |
+| Silent turns, run 1 (no VAD, Whisper's default context) | 3 of 3 produced text: "Thank you.", "It's a wonderful, wonderful, wonderful. Thank you. You're welcome. Thank you.", "Okay, we've done some over both. Have a good one." |
+| Silent turn, run 2 (raw and VAD, no previous-text context) | Both empty, no_speech 1.0. Only 1 turn |
+| Answer turns | Run 1: "I'm fine. I'm fine. I'm fine." Run 2: "I'm fine." both with and without VAD |
+
+U0 passes for format, playback, recording and frames. It is still open for the mount and for loudness through the mount. Silent-turn hallucination is now a known risk. A local rerun with synthetic quiet noise and a click reproduced "Thank you." without VAD, and with VAD the output was empty. Machine-voice phrases kept the same text with VAD at 0 dB and at -20 dB. In the same rerun, a quiet machine-voice "Help" was heard as "Health." with VAD and without it.
