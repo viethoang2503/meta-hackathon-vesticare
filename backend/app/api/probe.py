@@ -83,10 +83,17 @@ def transcribe(pcm: np.ndarray) -> dict:
         if _whisper is None:
             from faster_whisper import WhisperModel
             _whisper = WhisperModel("small", device="cpu", compute_type="int8")
-        started = time.perf_counter()
-        segments, _ = _whisper.transcribe(pcm, language="en", beam_size=1, vad_filter=False)
-        text = " ".join(s.text.strip() for s in segments)
-    return {"transcript": text, "stt_ms": round((time.perf_counter() - started) * 1000)}
+        out = {}
+        # The first iPhone run heard "Thank you." in silent turns; run both so the
+        # report shows whether Silero VAD removes that without losing real speech.
+        for key, vad in (("raw", False), ("vad", True)):
+            started = time.perf_counter()
+            segments = list(_whisper.transcribe(pcm, language="en", beam_size=1, vad_filter=vad,
+                                                condition_on_previous_text=False)[0])
+            out[f"transcript_{key}"] = " ".join(s.text.strip() for s in segments)
+            out[f"stt_{key}_ms"] = round((time.perf_counter() - started) * 1000)
+            out[f"no_speech_{key}"] = round(max((s.no_speech_prob for s in segments), default=1.0), 2)
+    return out
 
 
 def jpeg_size(data: bytes) -> tuple[int, int] | None:

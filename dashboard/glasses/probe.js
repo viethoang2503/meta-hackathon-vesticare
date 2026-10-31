@@ -1,6 +1,9 @@
 // U0 gate (docs/spatial/MVP2_PLAN.md): play a line, wait the guard, record one
 // finalized 4 s turn, upload it with a frame, and log what the backend decoded.
-const token = new URLSearchParams(location.hash.slice(1)).get("t");
+const params = new URLSearchParams(location.hash.slice(1));
+const token = params.get("t");
+// keep=1 leaves the raw turn in backend/probe_data/ (git-ignored) for offline reruns.
+const keep = params.get("keep") === "1";
 const GUARD_MS = 500;
 const TURN_MS = 4000;
 const TTS_TIMEOUT_MS = 10000;
@@ -86,7 +89,7 @@ async function trial(mode) {
   const rec = await record(TURN_MS);
   $("say").textContent = "";
   status("Uploading…");
-  const audio = await post(`audio?trial=${id}&stt=1`, rec.blob, rec.blob.type || "application/octet-stream");
+  const audio = await post(`audio?trial=${id}&stt=1&keep=${keep}`, rec.blob, rec.blob.type || "application/octet-stream");
   const frameBlob = await grabFrame();
   const frame = frameBlob ? await post(`frame?trial=${id}`, frameBlob, "image/jpeg") : { status: 0, body: { error: "no frame" } };
   const report = {
@@ -102,7 +105,8 @@ async function trial(mode) {
   const ok = a.decodable && frame.status === 200 && !tts.error && saved.status === 200;
   logRow(`<b class="${ok ? "pass" : "fail"}">${ok ? "PASS" : "CHECK"}</b> ${mode} · ${rec.blob.type || "?"} ${rec.blob.size} B<br>
     decoded: ${a.decodable ? `${a.codec} ${a.duration_s} s, rms ${a.rms_dbfs} dBFS` : (a.error || a.detail || a.status)}<br>
-    heard: “${a.transcript ?? ""}” (${a.stt_ms ?? "?"} ms STT, round trip ${a.round_trip_ms} ms)<br>
+    heard raw: “${a.transcript_raw ?? ""}” (${a.stt_raw_ms ?? "?"} ms)<br>
+    heard with VAD: “${a.transcript_vad ?? ""}” (${a.stt_vad_ms ?? "?"} ms) · round trip ${a.round_trip_ms} ms<br>
     tts: ${tts.error ? `error ${tts.error}` : `${report.times_ms.tts_start}–${report.times_ms.tts_end} ms`} ·
     frame: ${frame.status === 200 ? `${frame.body.width}×${frame.body.height}` : `failed ${frame.status}`} · report ${saved.status}`);
   status("Done. Run another trial or close the page.", ok ? "pass" : "fail");
