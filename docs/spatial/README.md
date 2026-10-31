@@ -1,10 +1,10 @@
 # Vesti-Care Spatial
 
-Thiết kế v0.3. Ngày 1 (các gate) đã xong; ứng dụng chưa được triển khai theo thiết kế này.
+Bộ tài liệu MVP 1 và MVP 2. Trạng thái và bằng chứng MVP 1 nằm ở [ACCEPTANCE.md](ACCEPTANCE.md); phạm vi MVP 2 đã chốt ở [MVP2.md](MVP2.md), chưa phải báo cáo triển khai.
 
 Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1, agent Muse Spark và một căn nhà 3D có nội thất. Camera cho biết phía trước có gì nguy hiểm; IMU cho biết người đeo có ngã thật hay không. Người đeo nhận lời nhắc và phản hồi qua HUD kính mô phỏng. Người chăm sóc chọn sự kiện trong nhà để xem bằng chứng và xử lý cảnh báo.
 
-## Phạm vi đã chốt
+## Phạm vi MVP 1
 
 - Một người thực hiện trong 10 ngày, có IMU và iPhone, có quyền Meta Model API.
 - Demo web trên một tab, UI và lời cảnh báo tiếng Anh.
@@ -12,7 +12,7 @@ Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1,
 - Start và Stop cho replay 1x. Mỗi lần chạy có session riêng.
 - Classifier, SAM và agent chạy thật. Nhà, vị trí, đường đi và HUD được mô phỏng.
 - Vào vùng nguy hiểm thì HUD nhắc phòng ngừa, SAM xác nhận trên khung hình, không báo ai.
-- FALL chỉ được tính khi người đeo nằm yên sau đó. HUD hỏi "Are you OK?" và đếm ngược 7 giây; người đeo hủy được báo nhầm, im lặng thì báo người chăm sóc.
+- FALL chỉ được tính khi người đeo nằm yên sau đó. HUD hỏi "Are you OK?" và đếm ngược 7 giây; người đeo tự xác nhận ổn để hủy cảnh báo, im lặng thì báo người chăm sóc.
 - Không phát hiện mất thăng bằng hay suýt ngã bằng IMU (xem GATES.md).
 - Có xác nhận của người chăm sóc và escalation mô phỏng tới liên hệ thứ hai.
 - Mọi phần mở rộng bắt đầu sau khi MVP 1 hoàn thành và được nghiệm thu.
@@ -27,7 +27,17 @@ Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1,
 - [GATES.md](GATES.md) ghi kết quả đo của Ngày 1 và các thí nghiệm về lớp INSTABILITY.
 - [ACCEPTANCE.md](ACCEPTANCE.md) là bảng nghiệm thu AC01 đến AC12, T1 đến T12 và các số đo đã công bố.
 - [CREDITS.md](CREDITS.md) ghi nguồn và giấy phép của thư viện, model, dữ liệu và asset.
-- [MVP2.md](MVP2.md) là phạm vi MVP 2: người thật, thiết bị thật.
+- [MVP2.md](MVP2.md) là đặc tả MVP 2: người thật, thiết bị thật.
+- [MVP2_ARCHITECTURE.md](MVP2_ARCHITECTURE.md) là kiến trúc MVP 2: phiên sống, kênh người đeo, Telegram, agent giải thích và trấn an.
+- [MVP2_PLAN.md](MVP2_PLAN.md) là thứ tự làm, lịch và cách cắt khi chậm của MVP 2.
+
+## Phạm vi MVP 2 đã chốt
+
+- Tiếng Anh trước; IMU thật → hỏi người đeo → Telegram thật → Ack/escalation.
+- Backend giữ deadline 30 s; giọng nói không rõ hoặc mất kết nối không gia hạn. Stop ngừng thu nhưng incident đã mở vẫn được xử lý.
+- Agent giải thích, cập nhật bằng chứng và trấn an bằng mẫu cố định. Sơ cứu, hướng dẫn đứng dậy và tiếng Việt nằm ngoài P0.
+- Camera thật, SAM, S3 replay được; vị trí live chưa đo được hiện Unknown. Nhà 3D là minh họa.
+- Gate phần cứng và iPhone từ ngày 1; lịch 5 ngày bao gồm quay video. Các giá trị nghiệm thu mới là mục tiêu, chưa phải số đo.
 
 ## Điều gì chạy thật
 
