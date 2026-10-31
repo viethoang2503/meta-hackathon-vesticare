@@ -25,3 +25,6 @@ pytest>=7.0.0
 numpy>=1.26.0
 tensorflow>=2.16.0
 pyserial>=3.5
+# MVP 2 speech: Whisper small on CPU. PyAV 16+ breaks faster-whisper 1.2.1 (metadata_errors kwarg).
+faster-whisper==1.2.1
+av>=14,<16

@@ -98,6 +98,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # Neu de trong ("") thi bo qua kiem tra token — cho phep simulator hoat dong.
 DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", "")
 
+# U0 iPhone probe (docs/spatial/MVP2_PLAN.md). Empty keeps /api/probe/* answering 404.
+PROBE_TOKEN = os.getenv("VC_PROBE_TOKEN", "")
+
 
 # ===========================================================================
 # DU BAO THOI TIET (Sprint 5)

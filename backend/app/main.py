@@ -21,6 +21,7 @@ logging.basicConfig(
 
 from app.api.alerts import router as alerts_router
 from app.api.forecast import router as forecast_router
+from app.api.probe import router as probe_router
 from app.api.sensor import router as sensor_router
 from app.api.spatial import router as spatial_router
 from app.api.websocket import router as stream_router
@@ -98,6 +99,7 @@ app.include_router(alerts_router)
 app.include_router(stream_router)
 app.include_router(forecast_router)
 app.include_router(spatial_router)
+app.include_router(probe_router)
 
 
 @app.get("/api/health", tags=["System"])

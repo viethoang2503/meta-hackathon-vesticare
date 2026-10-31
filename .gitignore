@@ -55,3 +55,6 @@ desktop.ini
 
 # Verification harness (venv, scratch instances, evidence)
 .verify/
+
+# U0 probe raw audio and room photos (backend/app/api/probe.py)
+backend/probe_data/

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>U0 Phone Probe</title>
+  <style>
+    :root { --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6b6a66; --card: #fff; --line: #dcdad4; --ok: #1f7a3f; --bad: #b3261e; --accent: #2f5bd3; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe7; --muted: #a09e98; --card: #22221f; --line: #3a3934; --ok: #5cc184; --bad: #f2867e; --accent: #8aa8ff; } }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.45 -apple-system, system-ui, sans-serif; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p { margin: 6px 0; color: var(--muted); }
+    button { font: inherit; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); margin: 6px 6px 6px 0; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button:disabled { opacity: .45; }
+    #say { font-size: 22px; font-weight: 600; color: var(--fg); min-height: 1.5em; }
+    video { width: 160px; height: 120px; background: #000; border-radius: 8px; object-fit: cover; }
+    .row { border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 14px; overflow-wrap: anywhere; }
+    .pass { color: var(--ok); } .fail { color: var(--bad); }
+  </style>
+</head>
+<body>
+  <h1>U0 phone probe</h1>
+  <p>Checks speaker, microphone and camera for MVP 2. Nothing here raises an alert.</p>
+  <button id="start" class="primary">Start</button>
+  <button id="speak" disabled>Trial: I answer</button>
+  <button id="silent" disabled>Trial: nobody answers</button>
+  <p id="say"></p>
+  <p id="status">Tap Start once. It asks for microphone and camera.</p>
+  <video id="cam" playsinline muted autoplay></video>
+  <div id="log"></div>
+  <script type="module" src="probe.js"></script>
+</body>
+</html>
