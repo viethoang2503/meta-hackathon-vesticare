@@ -48,6 +48,6 @@ iPhone on iOS 18.7, Safari, held by hand at the laptop. The forehead mount is no
 | STT time | Whisper small took 0.9 to 1.1 s per pass on 5 of 6 turns, and 3.1 s on one |
 | Silent turns, run 1 (no VAD, Whisper's default context) | 3 of 3 produced text: "Thank you.", "It's a wonderful, wonderful, wonderful. Thank you. You're welcome. Thank you.", "Okay, we've done some over both. Have a good one." |
 | Silent turn, run 2 (raw and VAD, no previous-text context) | Both empty, no_speech 1.0. Only 1 turn |
-| Answer turns | Run 1: "I'm fine. I'm fine. I'm fine." Run 2: "I'm fine." both with and without VAD |
+| Answer turns | Run 1: "I'm fine. I'm fine. I'm fine." Run 2: "I'm fine." both with and without VAD. The speaker said it once in both runs, so run 1 repeated it with the default context |
 
-U0 passes for format, playback, recording and frames. It is still open for the mount and for loudness through the mount. Silent-turn hallucination is now a known risk. A local rerun with synthetic quiet noise and a click reproduced "Thank you." without VAD, and with VAD the output was empty. Machine-voice phrases kept the same text with VAD at 0 dB and at -20 dB. In the same rerun, a quiet machine-voice "Help" was heard as "Health." with VAD and without it.
+U0 passes for format, playback, recording and frames. The prompt was clearly audible with the phone in hand. The mount and loudness through the mount are still open. Silent-turn hallucination is now a known risk. A local rerun with synthetic quiet noise and a click reproduced "Thank you." without VAD, and with VAD the output was empty. Machine-voice phrases kept the same text with VAD at 0 dB and at -20 dB. In the same rerun, a quiet machine-voice "Help" was heard as "Health." with VAD and without it.

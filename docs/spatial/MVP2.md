@@ -44,7 +44,7 @@ Stop ngừng nhận dữ liệu mới và lời nhắc phòng ngừa. Incident �
 
 Một lần chạm Start trên iPhone xin quyền camera/micro và mở âm thanh. Cần thử trên chính điện thoại và giá gắn sẽ dùng trong demo; không suy ra từ thử trên laptop.
 
-1. Mọi câu loa có thể phát khi còn awaiting_wearer hoặc help_only không chứa cụm OK hoặc HELP trong các danh sách chuẩn bên dưới, xét theo chuẩn hóa và ranh giới token. Câu chỉ được phép phát khi đã alerted như alert_unconfirmed có thể chứa HELP, vì không mở lại lượt nghe hoặc tạo alert thứ hai. Trước Start, màn hình hướng dẫn người demo các câu trả lời được hỗ trợ; không đọc các câu trả lời mẫu trong lượt hỏi sự cố.
+1. Mọi câu loa có thể phát khi còn awaiting_wearer hoặc help_only không chứa cụm OK hoặc HELP trong các danh sách chuẩn bên dưới, xét theo chuẩn hóa và ranh giới token. Câu chỉ được phép phát khi đã alerted như alert_unconfirmed có thể chứa HELP, vì không mở lại lượt nghe hoặc tạo alert thứ hai. Trước Start, màn hình hướng dẫn người demo các câu trả lời được hỗ trợ, và khuyên nói `I need help` thay vì chỉ `Help` vì từ đơn nói nhỏ bị nhận thành `Health` khi thử giọng máy ([U0](evidence/mvp2/u0/README.md)); không đọc các câu trả lời mẫu trong lượt hỏi sự cố.
 2. Không thu để phân loại trong lúc phát loa và trong `post_playback_guard_ms` sau sự kiện kết thúc phát trên iPhone. Khởi đầu 500 ms cho mọi lời hệ thống phát; đo lại trên phòng/điện thoại thật. Khoảng chờ giảm rủi ro tiếng vang, không bảo đảm loại hết tiếng vọng. Client chỉ gửi `played` sau khi guard kết thúc; lưu riêng speech end và listen start. Deadline backend không thay đổi.
 3. Thu lượt cố định 4 s, P0 không dùng VAD. Lượt cuối ngắn hơn nếu chạm deadline hoặc có quyết định chuyển trạng thái; luôn stop/finalize để file giải mã được. Mốc giây 10 và 20 chỉ là lúc reminder đủ điều kiện; hoàn tất lượt đang thu rồi xét lời nhắc mới nhất, không cắt câu để phát nhắc, không mở lượt mới trước khi xét reminder. Ngay trước phát kiểm tra incident vẫn `awaiting_wearer` và chưa hết hạn; không gia hạn deadline.
 4. Phân loại theo danh sách và thứ tự chuẩn bên dưới; không mở rộng danh sách bằng prompt của agent hoặc bằng substring tùy ý.
@@ -57,7 +57,7 @@ Một lần chạm Start trên iPhone xin quyền camera/micro và mở âm than
 
 | Lớp | Danh sách đầy đủ sau chuẩn hóa | Cách match |
 |---|---|---|
-| OK | `i am ok`; `i am okay`; `i am all right`; `i am alright`; `i am fine` | Khớp toàn bộ câu; không chấp nhận chỉ vì tìm thấy cụm ở bên trong |
+| OK | `i am ok`; `i am okay`; `i am all right`; `i am alright`; `i am fine` | Tách câu theo dấu chấm câu của STT; OK khi có ít nhất một câu và mọi câu đều khớp toàn bộ một cụm OK, ví dụ `I'm fine. I'm fine.`. Không chấp nhận chỉ vì tìm thấy cụm ở bên trong |
 | HELP | `help`; `call`; `hurt`; `hurts`; `pain`; `ambulance`; `emergency`; `fell`; `fallen`; `not ok`; `not okay`; `not fine`; `not all right`; `not alright`; `cannot get up`; `cannot stand up`; `cannot move`; `painful`; `hurting`; `injured`; `bleeding`; `dizzy`; `cannot breathe`; `broke`; `broken` | Có ít nhất một token/cụm trong câu, xét trước OK |
 | UNCLEAR | Mọi câu còn lại, kể cả `yes`, `yeah`, `sure`, `ok`, `fine` đứng riêng, câu trống và câu không chắc chắn không khớp HELP | Không hủy |
 
@@ -81,7 +81,7 @@ Laptop hiện `Processing recorded responses` từ D tới D+G nếu incident đ
 
 Lời đã nhận không bị xóa khi kênh lỗi: có thể đồng thời `Help requested` và `Phone offline`. Tin Telegram chứa cả hai trường. Snapshot laptop hiện `Listening for help only until {deadline}` sau hủy, rồi `Processing recorded responses` khi hết D và `Voice response window closed` sau D+G; deadline có múi giờ và không thay đổi.
 
-Whisper `small`, faster-whisper int8 CPU là cấu hình khởi đầu, chưa phải bảo đảm độ chính xác. [Benchmark giọng máy](evidence/mvp2/whisper_bench.json) có câu Việt `Tôi ổn` bị nhận thành `Tôi ồn`. Tiếng Việt và hội thoại nhiều lượt để sau P0. Không dùng BOOT làm đường hủy P0 khi chưa có hợp đồng firmware và kiểm thử riêng.
+Whisper `small`, faster-whisper int8 CPU là cấu hình khởi đầu, chưa phải bảo đảm độ chính xác. STT chạy với `vad_filter=True` và `condition_on_previous_text=False`. Đây là bộ lọc trong Whisper, không phải VAD kết thúc lượt nghe. Lý do ở [U0](evidence/mvp2/u0/README.md): không có hai cài đặt này, 3/3 lượt im lặng trên iPhone sinh chữ và một câu nói một lần bị chép thành ba lần. [Benchmark giọng máy](evidence/mvp2/whisper_bench.json) có câu Việt `Tôi ổn` bị nhận thành `Tôi ồn`. Tiếng Việt và hội thoại nhiều lượt để sau P0. Không dùng BOOT làm đường hủy P0 khi chưa có hợp đồng firmware và kiểm thử riêng.
 
 Hàng chờ STT có giới hạn và ưu tiên dữ liệu mới nhất, không biết trước đoạn nào chứa HELP. Khi đầy, loại đoạn cũ nhất chưa xử lý để nhận đoạn mới; không hủy đoạn đang suy luận. Đây là giới hạn P0 đã chấp nhận: một câu HELP trong đoạn bị loại có thể không được nhận dạng, nên không bảo đảm độ trễ từ lúc nói HELP tới báo. Backend phải ghi chunk bị loại, số lần overflow và trạng thái `Speech degraded` trên laptop; deadline vẫn chạy. M2 đo riêng thời gian thu, đợi queue, STT, phân loại và lập lịch gửi. Benchmark một câu không chứng minh queue không đầy khi chạy đồng thời các model.
 
@@ -188,7 +188,7 @@ S3 là dữ liệu đồng thời của cùng một người: IMU, chuỗi ảnh
 | `late_help_grace_seconds` | 15 s sau D cho toàn bộ nhận audio và xử lý HELP muộn; không áp dụng cho hủy bằng OK |
 | `caregiver_ack_seconds` | 20 kể từ lần gửi đầu |
 | Timeout gửi Telegram | Tổng 5 s mỗi lần gửi |
-| Audio / STT | Lượt cố định 4 s, P0 không VAD; cắt ở deadline/quyết định và finalize; Whisper small int8 CPU |
+| Audio / STT | Lượt cố định 4 s, P0 không VAD kết thúc lượt; cắt ở deadline/quyết định và finalize; Whisper small int8 CPU, `vad_filter=True`, `condition_on_previous_text=False` |
 | Hàng chờ STT | 1 worker, tối đa 2 đoạn chờ; loại đoạn cũ khi đầy |
 | Ngắt cửa sổ khi gap | Device timestamp cách >40 ms hoặc mất sample sequence; không dùng thời gian nhận batch |
 | Detector coverage G4 | ≥95% sau khi loại đúng 2 s đầu, vẫn tính warm-up do reset và gap |
