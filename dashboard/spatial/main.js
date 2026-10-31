@@ -1,15 +1,15 @@
 import * as THREE from "./vendor/three.module.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
-import { addLights, buildHome, poseAt } from "./scene.js";
+import { addLights, buildHome } from "./scene.js?v=home4";
+import { createWearer, animateWearer } from "./wearer.js?v=home4";
 import { openIncident, setCaregiverHandler } from "./evidence.js";
 import { updateHud } from "./hud.js";
 import { createSession } from "./session.js";
 
 const HOME_ID = "home1";
 const CUTAWAY_SCALE = 0.35;
-const LYING_EYE_HEIGHT = 1.0;
 
-const manifest = await (await fetch(`/spatial-assets/homes/${HOME_ID}/manifest.json`)).json();
+const manifest = await (await fetch(`/spatial-assets/homes/${HOME_ID}/manifest.json`, { cache: "no-store" })).json();
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x14171c);
@@ -22,6 +22,8 @@ const main = new THREE.WebGLRenderer({ antialias: true });
 main.setPixelRatio(Math.min(devicePixelRatio, 2));
 main.shadowMap.enabled = true;
 main.shadowMap.type = THREE.PCFSoftShadowMap;
+main.toneMapping = THREE.ACESFilmicToneMapping;
+main.toneMappingExposure = 1.15;
 view.appendChild(main.domElement);
 
 const overview = manifest.cameras.overview;
@@ -38,6 +40,9 @@ const glassesBox = document.getElementById("glasses");
 const glasses = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 glasses.setPixelRatio(1);
 glasses.shadowMap.enabled = true;
+glasses.shadowMap.type = THREE.PCFSoftShadowMap;
+glasses.toneMapping = THREE.ACESFilmicToneMapping;
+glasses.toneMappingExposure = 1.15;
 glassesBox.appendChild(glasses.domElement);
 const glassesCam = new THREE.PerspectiveCamera(70, 4 / 3, 0.05, 50);
 
@@ -72,32 +77,14 @@ const tags = manifest.zones.map((z) => {
   el.className = "zone-tag" + (z.fall_exposure ? " hazard" : "");
   el.textContent = z.label;
   view.appendChild(el);
-  const y = z.id === "stairs_landing" ? manifest.stairs.steps * manifest.stairs.rise + 0.3 : 0.3;
+  const stairHeight = manifest.stairs.steps * manifest.stairs.rise;
+  const y = z.id === "stairs_landing" ? stairHeight + 0.3 : z.id === "stairs_flight" ? stairHeight / 2 + 0.3 : 0.3;
   return { el, hazard: z.fall_exposure, at: new THREE.Vector3((z.rect.x[0] + z.rect.x[1]) / 2, y, (z.rect.z[0] + z.rect.z[1]) / 2) };
 });
 
-const wearer = new THREE.Group();
-{
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 1.0, 4, 12), new THREE.MeshStandardMaterial({ color: 0x3f7cc4 }));
-  body.position.y = 0.68;
-  body.castShadow = true;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 16, 12), new THREE.MeshStandardMaterial({ color: 0xe8c4a0 }));
-  head.position.y = 1.45;
-  wearer.add(body, head);
-  wearer.visible = false;
-  scene.add(wearer);
-}
-function placeWearer(pose) {
-  const [x, y, z] = pose.eye;
-  const heading = Math.atan2(pose.look[0] - x, pose.look[2] - z);
-  wearer.visible = true;
-  wearer.position.set(x, 0, z);
-  wearer.rotation.set(0, heading, 0);
-  if (y < LYING_EYE_HEIGHT) {
-    wearer.rotation.x = Math.PI / 2;
-    wearer.position.y = 0.2;
-  }
-}
+const wearerRig = createWearer();
+const wearer = wearerRig.root;
+scene.add(wearer);
 
 const markers = new Map();
 const markerMaterial = new THREE.MeshStandardMaterial({ color: 0xe0483e, emissive: 0x7a1410 });
@@ -174,7 +161,9 @@ function renderGlasses(renderer) {
   const zonesVisible = home.zones.visible, wearerVisible = wearer.visible;
   home.zones.visible = wearer.visible = false;
   markers.forEach((m) => (m.visible = false));
+  home.ceiling.visible = true;
   renderer.render(scene, glassesCam);
+  home.ceiling.visible = false;
   home.zones.visible = zonesVisible;
   wearer.visible = wearerVisible;
   markers.forEach((m) => (m.visible = true));
@@ -192,8 +181,7 @@ setCaregiverHandler(() => session.refresh());
 function render(now) {
   const live = session.current(now);
   if (live) {
-    const pose = poseAt(live.route, live.offset_ms);
-    placeWearer(pose);
+    const pose = animateWearer(wearerRig, live.route, live.offset_ms);
     aimGlasses(pose);
   }
   updateHud(session.snapshot(), live ? live.offset_ms : 0, session.wearerOk);
@@ -228,6 +216,9 @@ window.__spatial = {
     const r = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     r.setPixelRatio(1);
     r.shadowMap.enabled = true;
+    r.shadowMap.type = THREE.PCFSoftShadowMap;
+    r.toneMapping = THREE.ACESFilmicToneMapping;
+    r.toneMappingExposure = 1.15;
     r.setSize(width, height, false);
     const saved = { fov: glassesCam.fov, aspect: glassesCam.aspect, pos: glassesCam.position.clone(), quat: glassesCam.quaternion.clone() };
     glassesCam.aspect = width / height;
