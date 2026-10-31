@@ -24,6 +24,10 @@ Trạng thái ngày 2026-10-30. Dòng nào ghi "chưa xác minh" thì chưa tìm
 | Bộ dữ liệu tiền đình (`vestibular_dataset`) | Đoạn đi bộ của S1 và S2, thí nghiệm INSTABILITY | Chưa xác minh nguồn và điều khoản |
 | KFall | Tiền xử lý khi train (`ml/training/preprocess_kfall.py`) | Chưa xác minh |
 
+## Nội dung sơ cứu
+
+`assets/first_aid/library.json` rút gọn hướng dẫn trên trang "Falls" của NHS (https://www.nhs.uk/conditions/falls/, xem lại ngày 6/3/2025) để đọc thành lời. Nội dung NHS dùng theo Open Government Licence theo hiểu biết của dự án; chưa xác minh điều khoản cho trang cụ thể này.
+
 ## Asset 3D
 
 Ngôi nhà, nội thất và nhân vật dựng bằng khối cơ bản trong `dashboard/spatial/scene.js`. Không dùng model, texture hay âm thanh bên ngoài. Ảnh camera trong `assets/scenarios/*/frames/` là ảnh render từ cảnh này.

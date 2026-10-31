@@ -64,6 +64,7 @@ Nguyên tắc: **code là sàn, agent là phần cộng thêm. AI chỉ được
 | `reassure_wearer(câu)` | Trấn an: "Your daughter has been told. Help is coming." |
 | `notify_next_contact()` | Báo liên hệ 2 khi liên hệ 1 chưa Ack |
 | `sound_alarm()` | Còi to trên iPhone 1 để người trong nhà nghe thấy |
+| `give_guidance(mã)` | Đọc một câu hướng dẫn sơ cứu từ `assets/first_aid/library.json` qua loa iPhone 1 |
 | Tool đọc bằng chứng của MVP 1 | IMU, ảnh, SAM, lịch sử sự cố |
 
 3. Agent không có tool hủy. Chỉ câu "I'm OK" rõ ràng qua code mới hủy được.
@@ -71,6 +72,16 @@ Nguyên tắc: **code là sàn, agent là phần cộng thêm. AI chỉ được
 5. Mọi hành động ghi vào action log với nhãn `by agent`.
 6. Agent lỗi hoặc chậm thì sàn an toàn vẫn chạy.
 7. Không gọi điện và không gọi số cấp cứu thật.
+
+## Hướng dẫn sơ cứu cho người đeo
+
+Agent không tự viết lời khuyên y tế. Nó chỉ chọn câu trong `assets/first_aid/library.json`; code kiểm tra mã có trong thư viện rồi mới đọc ra loa, giống cơ chế chặn đề xuất sửa nhà bịa ra ở MVP 1.
+
+- Nguồn: trang "Falls" của NHS (https://www.nhs.uk/conditions/falls/, xem lại ngày 6/3/2025). Mỗi câu ghi bước NHS mà nó rút gọn. Có bản tiếng Anh và tiếng Việt.
+- Thứ tự thường gặp: `stay_calm`; không đau thì `get_up_slowly_1`, `get_up_slowly_2`, `sit_and_rest`; đau hoặc không đứng được thì `stay_still_help_coming`, `keep_warm`, `keep_moving_gently`, `shout_for_help`; người thân Ack thì `family_told`.
+- Dấu hiệu nguy hiểm theo NHS (có thể bị thương ở đầu, lưng, cổ, hông, hoặc không đứng dậy được): code báo người thân ngay, tin nhắn kèm `caregiver_note` khuyên gọi 115. Người đeo không được hướng dẫn đứng dậy.
+- Hướng dẫn không bao giờ làm chậm cảnh báo; mỗi lần một câu ngắn rồi chờ người đeo.
+- Giao diện và bài nộp ghi: hướng dẫn chung theo NHS, không thay thế chẩn đoán y tế. Thư viện chờ một chuyên gia (vật lý trị liệu hoặc lão khoa) xem trước khi demo.
 
 ## Ngoài phạm vi
 

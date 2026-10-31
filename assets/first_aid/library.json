@@ -1,0 +1,25 @@
+{
+  "version": "1",
+  "source": "NHS, \"Falls\", https://www.nhs.uk/conditions/falls/, page last reviewed 6 March 2025. Wording shortened for speech; each line keeps the meaning of the NHS step it names. General guidance after a fall, not a diagnosis. Pending review by a clinician.",
+  "emergency_number_vn": "115",
+  "red_flags": [
+    { "id": "head_back_neck_hip", "words_en": ["head", "neck", "back", "hip"], "words_vi": ["dau dau", "dap dau", "dau co", "dau lung", "dau hong", "gay"], "nhs": "Call 999 if the person may have injured the head, back, neck or hip." },
+    { "id": "cannot_get_up", "words_en": ["can't get up", "cannot get up", "can't move", "cannot move"], "words_vi": ["khong dung day duoc", "khong cu dong duoc", "khong dung len duoc"], "nhs": "Call 999 if the person has fallen and cannot get up." }
+  ],
+  "guidance": [
+    { "id": "stay_calm", "when": "first, right after the fall", "en": "Try to stay calm. Don't get up yet. Check whether anything hurts.", "vi": "Hãy bình tĩnh. Đừng đứng dậy vội. Kiểm tra xem có chỗ nào đau không.", "nhs_step": "Try to stay calm; check yourself for pain or injuries." },
+    { "id": "get_up_slowly_1", "when": "not hurt and feels able to get up", "en": "Take your time. Roll onto your side, then onto your hands and knees.", "vi": "Cứ từ từ. Lăn sang một bên, rồi chống tay và đầu gối.", "nhs_step": "Do not get up too quickly; roll onto your side, then onto your hands and knees." },
+    { "id": "get_up_slowly_2", "when": "after get_up_slowly_1", "en": "Crawl to something sturdy, like a heavy chair. Hold it, put one foot flat on the floor, and stand up slowly.", "vi": "Bò tới một vật chắc chắn như ghế nặng. Bám vào, đặt một bàn chân xuống sàn, rồi đứng lên thật chậm.", "nhs_step": "Find something sturdy to hold, crawl to it if needed; put one foot flat on the floor and stand slowly." },
+    { "id": "sit_and_rest", "when": "after standing up", "en": "Now sit down and rest for a while.", "vi": "Giờ hãy ngồi xuống và nghỉ một lúc.", "nhs_step": "Sit down and rest while you recover." },
+    { "id": "stay_still_help_coming", "when": "hurt, a red flag, or cannot get up", "en": "Stay where you are. I have told your family. Help is coming.", "vi": "Cứ nằm yên đó. Tôi đã báo cho gia đình. Sẽ có người tới giúp.", "nhs_step": "If you cannot get up, call for help with a phone or alarm." },
+    { "id": "keep_warm", "when": "waiting on the floor", "en": "Try to keep warm. Cover yourself with anything nearby, like a towel, a coat or a blanket.", "vi": "Cố giữ ấm. Đắp bất cứ thứ gì gần bạn, như khăn, áo khoác hay chăn.", "nhs_step": "Keep warm by covering yourself with anything nearby." },
+    { "id": "keep_moving_gently", "when": "waiting on the floor, not a red flag", "en": "If it doesn't hurt, gently move your arms and legs from time to time.", "vi": "Nếu không đau, thỉnh thoảng cử động nhẹ tay chân.", "nhs_step": "Keep moving by rolling side to side or gently moving your arms and legs." },
+    { "id": "shout_for_help", "when": "waiting, someone may be nearby", "en": "If someone may be nearby, call out for help or knock on the floor.", "vi": "Nếu có thể có người ở gần, hãy gọi to hoặc gõ xuống sàn.", "nhs_step": "Shout for help or bang on a wall or the floor." },
+    { "id": "family_told", "when": "a contact has acknowledged", "en": "Your family has seen the alert and is on the way.", "vi": "Gia đình đã thấy thông báo và đang tới.", "nhs_step": null }
+  ],
+  "caregiver_note": {
+    "en": "If they may have hurt their head, back, neck or hip, or cannot get up, call 115 for an ambulance. Help them up only if they can get up themselves; do not lift them.",
+    "vi": "Nếu có thể bị thương ở đầu, lưng, cổ hoặc hông, hoặc không tự đứng dậy được, hãy gọi 115. Chỉ đỡ dậy khi người đó tự đứng được; đừng tự nhấc người đó lên.",
+    "nhs_step": "Call 999 for head, back, neck or hip injury or cannot get up; help someone up only if they can get up, do not lift them yourself."
+  }
+}
