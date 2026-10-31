@@ -13,7 +13,14 @@ namespace imu {
 
 bool init() {
     Wire.begin(21, 22);
-    return mpu.begin();
+    if (!mpu.begin()) {
+        return false;
+    }
+    // The library default (+-2 g, +-500 deg/s) clips fall impacts, which reach
+    // several g; SisFall was recorded at +-16 g and +-2000 deg/s.
+    mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
+    mpu.setGyroRange(MPU6050_RANGE_2000_DEG);
+    return true;
 }
 
 ImuSample readRaw() {
