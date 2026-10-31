@@ -14,7 +14,7 @@ MVP 1 chứng minh logic trên dữ liệu ghi sẵn của nhiều người, gh�
 |---|---|---|
 | ESP32 + MPU-6050 đeo ở hông | IMU, gửi batch 10 mẫu ở 50 Hz vào `/api/sensor/batch` | `ESP32 waist IMU` |
 | iPhone 1 gắn ở trán | Camera ngang mắt, loa và micro. Màn hình úp vào trán nên không dùng làm HUD | `Phone camera at eye height (glasses proxy)` |
-| iPhone 2 | Người chăm sóc: trang Ack và Telegram | `Caregiver phone` |
+| iPhone 2 | Người chăm sóc: nhận thông báo Telegram có nút "Tôi đã biết" | `Caregiver phone` |
 | Laptop | Backend, màn hình toàn cảnh, bản sao HUD cho khán giả | |
 
 Không gọi điện thoại là kính ở bất kỳ đâu.
@@ -24,7 +24,7 @@ Không gọi điện thoại là kính ở bất kỳ đâu.
 1. **G4, gate phần cứng.** Làm trước mọi thứ khác.
 2. **Phiên sống.** IMU từ ESP32 và ảnh từ iPhone 1 vào cùng `StreamMonitor`, incident, đếm ngược, liên hệ 1 và liên hệ 2 như MVP 1. Không có bản luật thứ hai.
 3. **Trang `/glasses/` trên iPhone 1, HUD bằng âm thanh.** Camera gửi ảnh định kỳ, SAM tìm cầu thang trong ảnh thật thay cho zone soạn sẵn. Loa đọc lời nhắc. Sau khi ngã, hệ thống hỏi và nghe người đeo theo mục "Hội thoại sau khi ngã". Người đeo chỉ chạm một lần lúc bắt đầu phiên để iPhone cho mở loa và micro. Laptop chiếu bản sao HUD để khán giả thấy người đeo nghe gì.
-4. **Người chăm sóc trên iPhone 2.** Trang Ack và tin Telegram thật qua tích hợp sẵn có.
+4. **Người chăm sóc trên iPhone 2.** Thông báo đẩy qua Telegram bot, dùng code gửi tin sẵn có. Tin có nút "Tôi đã biết"; backend hỏi Telegram định kỳ (long polling) nên không cần đường link công khai. Bấm nút là Ack và chặn liên hệ 2. Không gọi điện, không WhatsApp trong MVP 2.
 5. **Agent** giải thích trên ảnh thật, cùng luật trích bằng chứng như MVP 1.
 6. **S3.** Một lượt ghi thật của cùng một người (video ở trán, IMU ở hông, đồng bộ bằng một cái vỗ tay), xem lại được trên repo mà không cần phần cứng.
 7. **Bảng thử nghiệm.** Ít nhất 2 người, ngã có kiểm soát lên nệm và các hoạt động dễ gây báo nhầm, tính theo từng người.
@@ -50,15 +50,27 @@ Micro tắt khi có kết quả. Câu nghe được lưu vào bằng chứng c�
 - Phân loại câu trả lời bằng `dashboard/glasses/reply.js`: cụm cần giúp được xét trước; chỉ câu "I'm OK" rõ ràng mới hủy. Một câu vừa ổn vừa nhờ gọi người ("I'm OK, call my son") được tính là cần giúp.
 - Nút BOOT trên ESP32 là phương án dự phòng.
 
-## Lệnh giọng nói và agent
+## Agent ứng cứu
 
-Người đeo có thể nói tự do, ví dụ "I fell and my hip hurts, call my daughter". Nguyên tắc: **AI chỉ được làm cảnh báo mạnh hơn, không bao giờ làm yếu đi.**
+Nguyên tắc: **code là sàn, agent là phần cộng thêm. AI chỉ được làm cảnh báo mạnh hơn, không bao giờ làm yếu đi.**
 
-1. Code phân loại câu nói trước. Có ý cần giúp thì báo ngay, không chờ agent.
-2. Sau đó Muse Spark đọc câu nói và chỉ được gọi các hành động trong danh sách cho phép: báo liên hệ 1, báo liên hệ 2, gọi cấp cứu mô phỏng. Nó tóm tắt tình trạng ("đau hông", "không đứng dậy được") vào tin nhắn cho người chăm sóc.
-3. Agent không có hành động hủy. Chỉ câu "I'm OK" rõ ràng qua code mới hủy được.
-4. Agent lỗi hoặc chậm thì cảnh báo vẫn đi như bước 1.
-5. Không gọi số cấp cứu thật (115) trong dự án. "Cấp cứu" là một liên hệ mô phỏng có nhãn rõ ràng.
+1. **Sàn an toàn (code).** Câu nói có ý cần giúp, hoặc hết 30 s không nghe rõ "I'm OK", thì tin Telegram đầu tiên tới liên hệ 1 ngay, không chờ agent.
+2. **Agent Muse Spark** chạy sau đó với các tool trong danh sách cho phép:
+
+| Tool | Việc |
+|---|---|
+| `send_message(liên hệ, nội dung)` | Telegram tới liên hệ trong danh bạ cài sẵn, có tóm tắt: ở đâu, lúc nào, người đeo nói gì |
+| `talk_to_wearer(câu hỏi)` | Hỏi qua loa iPhone 1 và nghe trả lời, ví dụ "Can you move your legs?" |
+| `reassure_wearer(câu)` | Trấn an: "Your daughter has been told. Help is coming." |
+| `notify_next_contact()` | Báo liên hệ 2 khi liên hệ 1 chưa Ack |
+| `sound_alarm()` | Còi to trên iPhone 1 để người trong nhà nghe thấy |
+| Tool đọc bằng chứng của MVP 1 | IMU, ảnh, SAM, lịch sử sự cố |
+
+3. Agent không có tool hủy. Chỉ câu "I'm OK" rõ ràng qua code mới hủy được.
+4. Chỉ liên lạc với danh bạ cài sẵn; tối đa 3 tin cho mỗi liên hệ trong một sự cố.
+5. Mọi hành động ghi vào action log với nhãn `by agent`.
+6. Agent lỗi hoặc chậm thì sàn an toàn vẫn chạy.
+7. Không gọi điện và không gọi số cấp cứu thật.
 
 ## Ngoài phạm vi
 
@@ -86,7 +98,7 @@ Nếu model không bắt được ngã trên thiết bị, tìm nguyên nhân �
 | ID | Tiêu chí |
 |---|---|
 | M1 | Tín hiệu thiết bị qua G4 |
-| M2 | Ngã thật lên nệm rồi nằm yên: iPhone 1 hỏi "Are you OK?". Nói "I'm OK" thì `cancelled_by_wearer`, không ai nhận tin. Nói "Help" thì báo ngay. Im lặng 30 s thì Telegram tới iPhone 2, không Ack sau 20 s thì liên hệ 2 |
+| M2 | Ngã thật lên nệm rồi nằm yên: iPhone 1 hỏi "Are you OK?". Nói "I'm OK" thì `cancelled_by_wearer`, không ai nhận tin. Nói "Help" thì báo ngay. Im lặng 30 s thì Telegram tới iPhone 2; bấm "Tôi đã biết" thì Ack; không ai bấm sau 20 s thì liên hệ 2 |
 | M3 | SAM nhận ra cầu thang thật từ camera ở trán trong x/N lần tiếp cận, ghi riêng lúc đủ sáng và lúc tối |
 | M4 | Bảng thử nghiệm được công bố theo từng người, dù kết quả thế nào |
 | M5 | S3 cho cùng incident mỗi lần xem lại |
