@@ -13,9 +13,9 @@ MVP 1 chứng minh logic trên dữ liệu ghi sẵn của nhiều người, gh�
 | Thiết bị | Vai trò | Nhãn nguồn trên giao diện |
 |---|---|---|
 | ESP32 + MPU-6050 đeo ở hông | IMU, gửi batch 10 mẫu ở 50 Hz vào `/api/sensor/batch` | `ESP32 waist IMU` |
-| iPhone 1 gắn ở trán | Camera ngang mắt, HUD trên màn hình, giọng nói | `Phone camera at eye height (glasses proxy)` |
+| iPhone 1 gắn ở trán | Camera ngang mắt, loa và micro. Màn hình úp vào trán nên không dùng làm HUD | `Phone camera at eye height (glasses proxy)` |
 | iPhone 2 | Người chăm sóc: trang Ack và Telegram | `Caregiver phone` |
-| Laptop | Backend, màn hình toàn cảnh | |
+| Laptop | Backend, màn hình toàn cảnh, bản sao HUD cho khán giả | |
 
 Không gọi điện thoại là kính ở bất kỳ đâu.
 
@@ -23,7 +23,7 @@ Không gọi điện thoại là kính ở bất kỳ đâu.
 
 1. **G4, gate phần cứng.** Làm trước mọi thứ khác.
 2. **Phiên sống.** IMU từ ESP32 và ảnh từ iPhone 1 vào cùng `StreamMonitor`, incident, đếm ngược, liên hệ 1 và liên hệ 2 như MVP 1. Không có bản luật thứ hai.
-3. **Trang `/glasses/` trên iPhone 1.** Camera gửi ảnh định kỳ, SAM tìm cầu thang trong ảnh thật thay cho zone soạn sẵn, HUD hiện lời nhắc, loa hỏi "Are you OK?", chạm màn hình để hủy. Hủy bằng giọng nói chỉ làm nếu Safari hỗ trợ.
+3. **Trang `/glasses/` trên iPhone 1, HUD bằng âm thanh.** Camera gửi ảnh định kỳ, SAM tìm cầu thang trong ảnh thật thay cho zone soạn sẵn. Loa đọc lời nhắc và hỏi "Are you OK?". Người đeo **trả lời bằng giọng nói**: nghe rõ "I'm OK" hoặc "Tôi ổn" thì hủy, nghe "Help" hoặc "Cứu" thì báo ngay, không rõ hoặc im lặng thì tiếp tục đếm ngược (`dashboard/glasses/reply.js`). Nhận dạng chạy trên điện thoại, chỉ gửi kết quả, không gửi ghi âm. Nút BOOT trên ESP32 là phương án dự phòng nếu Safari nhận giọng nói không ổn định. Laptop chiếu bản sao HUD để khán giả thấy người đeo nghe gì.
 4. **Người chăm sóc trên iPhone 2.** Trang Ack và tin Telegram thật qua tích hợp sẵn có.
 5. **Agent** giải thích trên ảnh thật, cùng luật trích bằng chứng như MVP 1.
 6. **S3.** Một lượt ghi thật của cùng một người (video ở trán, IMU ở hông, đồng bộ bằng một cái vỗ tay), xem lại được trên repo mà không cần phần cứng.
@@ -57,11 +57,12 @@ Nếu model không bắt được ngã trên thiết bị, tìm nguyên nhân �
 | ID | Tiêu chí |
 |---|---|
 | M1 | Tín hiệu thiết bị qua G4 |
-| M2 | Ngã thật lên nệm rồi nằm yên: iPhone 1 hỏi "Are you OK?". Chạm "I'm OK" thì `cancelled_by_wearer`, không ai nhận tin. Im lặng thì Telegram tới iPhone 2, không Ack sau 20 s thì liên hệ 2 |
+| M2 | Ngã thật lên nệm rồi nằm yên: iPhone 1 hỏi "Are you OK?". Nói "I'm OK" thì `cancelled_by_wearer`, không ai nhận tin. Nói "Help" thì báo ngay. Im lặng thì Telegram tới iPhone 2, không Ack sau 20 s thì liên hệ 2 |
 | M3 | SAM nhận ra cầu thang thật từ camera ở trán trong x/N lần tiếp cận, ghi riêng lúc đủ sáng và lúc tối |
 | M4 | Bảng thử nghiệm được công bố theo từng người, dù kết quả thế nào |
 | M5 | S3 cho cùng incident mỗi lần xem lại |
 | M6 | Mọi khối dữ liệu có nhãn nguồn đúng như bảng thiết bị |
+| M7 | Thử giọng nói trên iPhone: ghi số lần nhận đúng "I'm OK", "Help" và số lần tiếng ồn bị nhận nhầm thành "I'm OK". Lần nhận nhầm thành "I'm OK" phải bằng 0 |
 
 ## An toàn
 
