@@ -33,6 +33,22 @@ TEMPLATES = {
     "ack_received": "Acknowledgement recorded for fall alert #{incident_id}.",
 }
 
+# Lines spoken on iPhone 1, with the incident states in which each may play. The
+# ones that can play while the wearer is being listened to must not contain a trigger phrase.
+SPOKEN = {
+    "ask_ok": ("Are you all right? Please respond.", {"awaiting_wearer"}),
+    "ask_ok_10": ("Are you all right? Please respond.", {"awaiting_wearer"}),
+    "ask_ok_20": ("I have not received a clear response. Please respond.", {"awaiting_wearer"}),
+    "cancel_confirmed": ("The alert is cancelled. I will keep listening until the response window closes.",
+                         {"cancelled_by_wearer"}),
+    "alert_pending": ("I am sending an alert to your caregiver.", {"alerted"}),
+    "alert_sent": ("An alert has been sent to your caregiver.", {"alerted"}),
+    "alert_unconfirmed": ("I could not confirm that the alert was sent. If you can, call out for help.", {"alerted"}),
+    "caregiver_ack": ("Your caregiver has acknowledged the alert.", {"alerted"}),
+    "late_ok_recorded": ("You said you are OK. The alert remains active.", {"alerted"}),
+    "stairs_visible": ("Stairs visible ahead.", {None}),  # no incident open
+}
+
 ALLOWED = {
     "response_status": {"Help requested", "No clear response", "OK reported after alert"},
     "escalation_reason": {"No acknowledgement within the response window", "The first contact could not be notified"},
