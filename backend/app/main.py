@@ -9,7 +9,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -24,6 +25,7 @@ from app.api.forecast import router as forecast_router
 from app.api.probe import router as probe_router
 from app.api.sensor import router as sensor_router
 from app.api.spatial import router as spatial_router
+from app.api.wearer import router as wearer_router
 from app.api.websocket import router as stream_router
 from app.config import (
     CORS_ORIGINS,
@@ -116,6 +118,19 @@ app.include_router(stream_router)
 app.include_router(forecast_router)
 app.include_router(spatial_router)
 app.include_router(probe_router)
+app.include_router(wearer_router)
+
+# cloudflared adds Cf-Connecting-Ip to every request it forwards. Through the tunnel only the
+# phone's routes answer; Start, Stop, Ack, snapshots and evidence stay on the laptop
+# (MVP2_ARCHITECTURE.md, "Quyền qua tunnel"). The ESP32 posts over the LAN, not the tunnel.
+TUNNEL_PATHS = ("/glasses/", "/api/wearer/", "/api/probe/")
+
+
+@app.middleware("http")
+async def tunnel_guard(request: Request, call_next):
+    if "cf-connecting-ip" in request.headers and not request.url.path.startswith(TUNNEL_PATHS):
+        return JSONResponse({"detail": "Not available through the tunnel"}, status_code=403)
+    return await call_next(request)
 
 
 @app.get("/api/health", tags=["System"])

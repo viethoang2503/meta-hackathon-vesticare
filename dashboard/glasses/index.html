@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wearer Phone</title>
+  <style>
+    :root { --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6b6a66; --card: #fff; --line: #dcdad4; --ok: #1f7a3f; --bad: #b3261e; --accent: #2f5bd3; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe7; --muted: #a09e98; --card: #22221f; --line: #3a3934; --ok: #5cc184; --bad: #f2867e; --accent: #8aa8ff; } }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.45 -apple-system, system-ui, sans-serif; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p { margin: 6px 0; color: var(--muted); }
+    button { font: inherit; padding: 14px 20px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; }
+    button:disabled { opacity: .45; }
+    #state { font-size: 22px; font-weight: 600; margin: 14px 0 4px; }
+    ul { padding-left: 18px; color: var(--muted); font-size: 14px; }
+    .bad { color: var(--bad); } .good { color: var(--ok); }
+  </style>
+</head>
+<body>
+  <h1>Wearer phone</h1>
+  <p>Mount this phone at eye level. It speaks after a fall and listens for the answer.</p>
+  <p>Answers it understands: “I'm OK”, “I'm fine”, “I'm all right”. To ask for help, say “I need help”.</p>
+  <button id="start">Start</button>
+  <div id="state">Not started</div>
+  <p id="detail"></p>
+  <ul id="log"></ul>
+  <script type="module" src="glasses.js"></script>
+</body>
+</html>

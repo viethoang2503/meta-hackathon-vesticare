@@ -88,6 +88,7 @@ class SessionSnapshot(BaseModel):
     model_source: str
     scenario: dict | None
     live: dict | None = None
+    wearer: dict | None = None
     incidents: list[IncidentOut]
     actions: list[ActionOut]
     advisories: list[dict]

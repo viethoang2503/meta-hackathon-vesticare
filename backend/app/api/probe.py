@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import io
 import json
 import re
 import threading
@@ -15,11 +14,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import av
 import numpy as np
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config import PROBE_TOKEN
+from app.services.speech import decode_audio, whisper_model
 
 router = APIRouter(prefix="/api/probe", tags=["Probe"])
 
@@ -30,7 +29,6 @@ REPORT_PATH = REPO / "docs" / "spatial" / "evidence" / "mvp2" / "u0" / "trials.j
 MAX_BODY_BYTES = 3 * 1024 * 1024
 TRIAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_whisper = None
 _whisper_lock = threading.Lock()
 
 
@@ -56,39 +54,15 @@ async def _body(request: Request) -> bytes:
     return data
 
 
-def decode_audio(data: bytes) -> dict:
-    """Container facts plus 16 kHz mono PCM, or the decoder's error."""
-    try:
-        with av.open(io.BytesIO(data)) as container:
-            stream = container.streams.audio[0]
-            facts = {"container": container.format.name, "codec": stream.codec_context.name,
-                     "source_rate": stream.rate, "channels": stream.codec_context.channels}
-            resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
-            chunks = []
-            for frame in container.decode(stream):
-                chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(frame)]
-            chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(None)]
-    except (av.FFmpegError, IndexError, ValueError) as exc:
-        return {"decodable": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
-    pcm = np.concatenate(chunks).astype(np.float32) if chunks else np.zeros(0, np.float32)
-    level = lambda x: round(20 * float(np.log10(x + 1e-12)), 1)
-    return {"decodable": True, **facts, "duration_s": round(len(pcm) / 16000, 2),
-            "rms_dbfs": level(np.sqrt(np.mean(pcm ** 2))) if len(pcm) else None,
-            "peak_dbfs": level(np.max(np.abs(pcm))) if len(pcm) else None, "pcm": pcm}
-
-
 def transcribe(pcm: np.ndarray) -> dict:
-    global _whisper
+    model = whisper_model()
     with _whisper_lock:
-        if _whisper is None:
-            from faster_whisper import WhisperModel
-            _whisper = WhisperModel("small", device="cpu", compute_type="int8")
         out = {}
         # The first iPhone run heard "Thank you." in silent turns; run both so the
         # report shows whether Silero VAD removes that without losing real speech.
         for key, vad in (("raw", False), ("vad", True)):
             started = time.perf_counter()
-            segments = list(_whisper.transcribe(pcm, language="en", beam_size=1, vad_filter=vad,
+            segments = list(model.transcribe(pcm, language="en", beam_size=1, vad_filter=vad,
                                                 condition_on_previous_text=False)[0])
             out[f"transcript_{key}"] = " ".join(s.text.strip() for s in segments)
             out[f"stt_{key}_ms"] = round((time.perf_counter() - started) * 1000)

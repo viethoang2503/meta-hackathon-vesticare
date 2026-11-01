@@ -37,6 +37,7 @@ import logging
 import re
 import threading
 import time
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -76,6 +77,9 @@ from app.services.clock_sync import best_mapping
 from app.services.incident_policy import ALERTED, CANCELLED, decide_deadline, decide_reply, late_ok_targets
 from app.services.notifier import SimulatedNotifier
 from app.services.notify_templates import render
+from app.services.speech import SpeechJob, SpeechWorker, whisper_model
+from app.services.wearer_channel import TURN_MS, Listen, WearerChannel
+from app.services.wearer_reply import classify_reply
 from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
 from app.services.monitoring import StreamMonitor
 from app.services.scene_context import frame_near, home_manifest, location_at
@@ -235,6 +239,8 @@ class SpatialRunManager:
         late_help_grace_seconds: float = LATE_HELP_GRACE_SECONDS,
         notifier=None,
         send_timeout_seconds: float = TELEGRAM_SEND_TIMEOUT_SECONDS,
+        transcribe=None,
+        preload_whisper: bool = False,
     ) -> None:
         self._realtime = realtime
         self._run_timeout = run_timeout_seconds
@@ -263,6 +269,10 @@ class SpatialRunManager:
         self._send_timeout = send_timeout_seconds
         self._incident_tasks: dict[str, set[asyncio.Task]] = {}
         self._incident_cfg: dict[str, IncidentConfig] = {}
+        self._channels: dict[str, WearerChannel] = {}
+        self._phone_clocks: dict[str, dict] = {}
+        self._speech = SpeechWorker(transcribe) if transcribe else SpeechWorker()
+        self._preload_whisper = preload_whisper and transcribe is None
 
     def _db(self):
         # Looked up per call: tests swap database.SessionLocal after this module is imported.
@@ -395,6 +405,7 @@ class SpatialRunManager:
         self._stop_requested[session_id] = asyncio.Event()
         self._incident_cfg[session_id] = IncidentConfig(self._live_wearer_cancel, self._caregiver_ack, self._grace)
         self._session_notifiers[session_id] = notifier
+        self._channels[session_id] = WearerChannel()
         self._live[session_id] = LiveRun(
             patient_id=patient_id, device_id=device_id, wearer_cancel=self._live_wearer_cancel,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
@@ -402,6 +413,9 @@ class SpatialRunManager:
             started_mono_ms=time.monotonic() * 1000,
         )
         self._runs[session_id] = asyncio.create_task(self._live_watch(session_id))
+        if self._preload_whisper:
+            # The first turn after a fall should not wait for the model to load (2.5 s in the first live run).
+            self._background(asyncio.to_thread(whisper_model))
         _hint(session_id, "started")
         return session_id
 
@@ -683,7 +697,8 @@ class SpatialRunManager:
     def _release_if_idle(self, session_id: str) -> None:
         if session_id in self._runs or self._incident_tasks.get(session_id):
             return
-        for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg, self._session_notifiers):
+        for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg,
+                         self._session_notifiers, self._channels, self._phone_clocks):
             registry.pop(session_id, None)
 
     def _dispatch(self, session_id: str, lock: threading.Lock, follow: dict) -> None:
@@ -697,12 +712,35 @@ class SpatialRunManager:
         captured before D can still raise the alert."""
         cfg = self._incident_cfg[session_id]
         deadline = await asyncio.to_thread(self._deadline_of, incident_id)
+        opened = deadline - timedelta(seconds=cfg.wearer_cancel)
+        await asyncio.to_thread(self._voice, lock, session_id, incident_id, "ask_ok", "awaiting", deadline)
+        # Reminders become due at 10 s and 20 s; the phone plays the newest between its turns.
+        for template_id, at in (("ask_ok_10", 10), ("ask_ok_20", 20)):
+            due = opened + timedelta(seconds=at)
+            if due >= deadline:
+                break
+            while (remaining := (due - _utcnow()).total_seconds()) > 0:
+                await asyncio.sleep(remaining)
+            await asyncio.to_thread(self._voice, lock, session_id, incident_id, template_id, None, None)
         while (remaining := (deadline - _utcnow()).total_seconds()) > 0:
             await asyncio.sleep(remaining)
         follow = await asyncio.to_thread(self._on_deadline, lock, session_id, incident_id)
         self._dispatch(session_id, lock, follow)
         if follow.get("state") == CANCELLED:
             await asyncio.sleep(cfg.grace)
+
+    def _voice(self, lock, session_id, incident_id, template_id, listen_mode, until) -> None:
+        """Queue a line for iPhone 1 if the incident is still waiting; optionally (re)open listening."""
+        channel = self._channels.get(session_id)
+        if channel is None:
+            return
+        with lock, self._db() as db:
+            if db.get(AlertEvent, incident_id).spatial_state != "awaiting_wearer":
+                return
+            channel.say(template_id, incident_id, _utcnow())
+            if listen_mode:
+                channel.listen = Listen(incident_id, listen_mode, until)
+        _hint(session_id, "wearer")
 
     def _deadline_of(self, incident_id: int) -> datetime:
         with self._db() as db:
@@ -725,6 +763,9 @@ class SpatialRunManager:
         """awaiting/cancelled -> alerted, plus the initial send to contact_1. Caller commits."""
         cfg = self._incident_cfg[session_id]
         now = _utcnow()
+        channel = self._channels.get(session_id)
+        if channel is not None and channel.listen is not None and channel.listen.incident_id == row.id:
+            channel.listen = None  # MVP2.md: once alerted, listening ends; no new conversation in P0
         row.spatial_state, row.alert_reason, row.first_notify_at = ALERTED, reason, now
         row.caregiver_deadline_at = now + timedelta(seconds=cfg.caregiver_ack)
         row.notification_status = "scheduled"
@@ -794,7 +835,9 @@ class SpatialRunManager:
             action = db.get(SpatialAction, action_id)
             row = db.get(AlertEvent, action.incident_id)
             detail = json.loads(action.detail)
-            values = {"incident_id": row.id, "wearer_channel_status": "Unknown"}
+            channel = self._channels.get(session_id)
+            values = {"incident_id": row.id,
+                      "wearer_channel_status": channel.status(_utcnow()) if channel else "Unknown"}
             if detail["template"] in ("notify_initial", "notify_escalation"):
                 values |= {"event_time": _local_time(row.timestamp), "location_label": "Unknown",
                            "response_status": _response_status(db, row)}
@@ -981,7 +1024,8 @@ class SpatialRunManager:
         """The MVP 1 HUD button: a clear OK, captured now."""
         return await self.wearer_reply(incident_id, "ok", _utcnow())
 
-    async def wearer_reply(self, incident_id: int, reply: str, capture_end: datetime | None) -> dict | None:
+    async def wearer_reply(self, incident_id: int, reply: str, capture_end: datetime | None,
+                           speech: dict | None = None) -> dict | None:
         """A classified answer from the wearer (U4 feeds STT results here). Returns None for an
         unknown incident. `capture_end` is when the audio ended, already checked against the clock."""
         with self._db() as db:
@@ -992,11 +1036,11 @@ class SpatialRunManager:
         lock = self._locks.get(session_id)
         if lock is None:
             return {"incident_id": incident_id, "applied": False, "incident_state": state, "reason": "run_ended"}
-        result, follow = await asyncio.to_thread(self._record_reply, lock, session_id, incident_id, reply, capture_end)
+        result, follow = await asyncio.to_thread(self._record_reply, lock, session_id, incident_id, reply, capture_end, speech)
         self._dispatch(session_id, lock, follow)
         return result
 
-    def _record_reply(self, lock, session_id, incident_id, reply, capture_end):
+    def _record_reply(self, lock, session_id, incident_id, reply, capture_end, speech=None):
         with lock, self._db() as db:
             session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
             result = {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state}
@@ -1007,8 +1051,12 @@ class SpatialRunManager:
             follow: dict = {"deliver": []}
             if decision.alert:
                 follow |= self._alert_locked(db, session_id, row, decision.alert)
+            channel = self._channels.get(session_id)
             if decision.cancel:
                 row.spatial_state = CANCELLED
+                if channel is not None:
+                    channel.say("cancel_confirmed", row.id, _utcnow())
+                    channel.listen = Listen(row.id, "help_only", row.wearer_deadline_at)
             applied, reason = decision.applied, decision.reason
             if decision.late_ok and _late_ok_reported(db, row.id):
                 applied, reason = False, "already_recorded"  # a repeated OK is logged, nothing more is sent
@@ -1018,15 +1066,120 @@ class SpatialRunManager:
                 detail=json.dumps({"response": reply, "applied": applied, "reason": reason,
                                    "cancelled_alert": decision.cancel, "raised_alert": decision.alert,
                                    "late_ok": decision.late_ok and applied,
-                                   "capture_end": capture_end.isoformat() if capture_end else None}),
+                                   "capture_end": capture_end.isoformat() if capture_end else None,
+                                   **({"speech": speech} if speech else {})}),
             ))
             db.flush()
             if decision.late_ok and applied:
                 follow["deliver"] = follow.get("deliver", []) + self._late_ok_locked(db, session_id, row)
+                if channel is not None:
+                    channel.say("late_ok_recorded", row.id, _utcnow())
             db.commit()
             result = {**result, "applied": applied, "incident_state": row.spatial_state, "reason": reason}
         _hint(session_id, "action")
         return result, follow
+
+    # --- iPhone 1 (docs/spatial/MVP2_ARCHITECTURE.md, "WearerChannel và STT") ----------------
+
+    def _channel(self, session_id: str, token: str | None) -> WearerChannel | None:
+        channel = self._channels.get(session_id)
+        if channel is None or not token or not secrets.compare_digest(token, channel.token):
+            return None
+        channel.last_seen = _utcnow()
+        return channel
+
+    def wearer_poll(self, session_id: str, token: str | None, after: int) -> dict | None:
+        channel, lock = self._channel(session_id, token), self._locks.get(session_id)
+        if channel is None or lock is None:
+            return None
+        now = _utcnow()
+        with lock, self._db() as db:
+            rows = {}
+
+            def row(incident_id):
+                if incident_id not in rows:
+                    rows[incident_id] = db.get(AlertEvent, incident_id)
+                return rows[incident_id]
+            pending = channel.pending(after, lambda i: row(i).spatial_state, lambda i: row(i).wearer_deadline_at, now)
+            listen = channel.listening_for(now)
+        return {
+            "utterances": [{"id": u.id, "template_id": u.template_id, "text": u.text, "incident_id": u.incident_id}
+                           for u in pending],
+            "listen": None if listen is None else {
+                "incident_id": listen.incident_id, "mode": listen.mode, "turn_ms": TURN_MS,
+                "remaining_ms": max(0, round((listen.until - now).total_seconds() * 1000))},
+        }
+
+    def wearer_played(self, session_id: str, token: str | None, utterance_id: int) -> bool | None:
+        channel, lock = self._channel(session_id, token), self._locks.get(session_id)
+        if channel is None or lock is None:
+            return None
+        with lock:
+            return channel.played(utterance_id)
+
+    def wearer_status(self, session_id: str, token: str | None, microphone_error: str | None) -> bool | None:
+        channel, lock = self._channel(session_id, token), self._locks.get(session_id)
+        if channel is None or lock is None:
+            return None
+        with lock:
+            channel.microphone_error = microphone_error
+        _hint(session_id, "wearer")
+        return True
+
+    def wearer_clock_report(self, session_id: str, token: str | None, rounds: list[dict]) -> dict | None:
+        if self._channel(session_id, token) is None:
+            return None
+        mapping = best_mapping(rounds)
+        if mapping is not None:
+            self._phone_clocks[session_id] = mapping
+        return mapping or {}
+
+    def _capture_end(self, session_id: str, start_ms: float | None, end_ms: float | None, received: datetime) -> tuple:
+        """The turn's end on the backend clock, or (None, reason) when it cannot be confirmed:
+        MVP2.md does not let an unchecked phone timestamp decide anything."""
+        clock = self._phone_clocks.get(session_id)
+        if clock is None:
+            return None, "phone clock unsynchronized"
+        if start_ms is None or end_ms is None or not 0 < end_ms - start_ms <= TURN_MS + 500:
+            return None, "capture interval missing or impossible"
+        now_mono = time.monotonic() * 1000
+        end_utc = received - timedelta(milliseconds=now_mono - (end_ms + clock["offset_ms"]))
+        if end_utc > received + timedelta(milliseconds=clock["uncertainty_ms"]):
+            return None, "capture ends after it was received"
+        return end_utc, None
+
+    async def wearer_audio(self, session_id: str, token: str | None, incident_id: int, data: bytes,
+                           capture_start_ms: float | None, capture_end_ms: float | None, mime: str) -> dict | None:
+        """One finalized turn from iPhone 1. Decoded and transcribed in memory, never stored."""
+        channel = self._channel(session_id, token)
+        if channel is None:
+            return None
+        received = _utcnow()
+        capture_end, capture_problem = self._capture_end(session_id, capture_start_ms, capture_end_ms, received)
+        channel.turns += 1
+        meta = {"session_id": session_id, "incident_id": incident_id, "mime": mime, "bytes": len(data),
+                "capture_end": capture_end, "capture_problem": capture_problem,
+                "capture_ms": None if capture_start_ms is None or capture_end_ms is None else capture_end_ms - capture_start_ms}
+        dropped = self._speech.submit(SpeechJob(data, meta, self._speech_done))
+        return {"queued": True, "pushed_out_older_turn": dropped is not None, "queue_depth": self._speech.depth,
+                "capture_time": "confirmed" if capture_end else capture_problem}
+
+    async def _speech_done(self, job: SpeechJob, result: dict) -> None:
+        meta, session_id = job.meta, job.meta["session_id"]
+        channel = self._channels.get(session_id)
+        if channel is not None:
+            if result["status"] == "dropped":
+                channel.speech_dropped(_utcnow())
+            channel.stt_failed = result["status"] == "failed"
+        capture_end, problem = meta["capture_end"], meta["capture_problem"]
+        if result["status"] == "ok" and capture_end is not None and meta["capture_ms"] is not None \
+                and abs(result["duration_s"] * 1000 - meta["capture_ms"]) > 500:
+            capture_end, problem = None, "decoded length does not match the capture interval"
+        speech = {"status": result["status"], "transcript": result.get("transcript"), "queue_ms": result.get("queue_ms"),
+                  "stt_ms": result.get("stt_ms"), "error": result.get("error") or result.get("reason"),
+                  "capture_problem": problem, "mime": meta["mime"], "bytes": meta["bytes"]}
+        reply = classify_reply(result.get("transcript")) if result["status"] == "ok" else "unclear"
+        await self.wearer_reply(meta["incident_id"], reply, capture_end, speech)
 
 
 def _fixes_library() -> list[dict]:
@@ -1079,6 +1232,15 @@ def _append_journal(path: Path, steps, received_at: datetime, session_offset: fl
 def _journal_path(session_id: str, live_data_dir: Path | None = None) -> Path:
     # Looked up per call so tests can point LIVE_DATA_DIR at a temporary folder.
     return (live_data_dir or LIVE_DATA_DIR) / session_id / "imu.csv"
+
+
+def _channel_snapshot(manager, session_id: str) -> dict | None:
+    """The wearer channel as the laptop shows it, including the link token: the snapshot route is
+    not reachable through the tunnel (main.py), so only the laptop sees it."""
+    channel = manager._channels.get(session_id)
+    if channel is None:
+        return None
+    return {**channel.snapshot(_utcnow()), "token": channel.token}
 
 
 def _live_json(s) -> dict:
@@ -1164,7 +1326,7 @@ def _actions_json(actions) -> list[dict]:
     ]
 
 
-def session_snapshot(session_id: str, session_factory=None) -> dict | None:
+def session_snapshot(session_id: str, session_factory=None, manager=None) -> dict | None:
     with (session_factory or database.SessionLocal)() as db:
         s = db.get(SpatialSession, session_id)
         if s is None:
@@ -1204,6 +1366,7 @@ def session_snapshot(session_id: str, session_factory=None) -> dict | None:
             "model_source": s.model_source,
             "scenario": None if live else {k: scenario_meta[k] for k in ("id", "title", "duration_ms", "home", "location", "route")},
             "live": _live_json(s) if live else None,
+            "wearer": _channel_snapshot(manager or spatial_runs, s.id),
             "incidents": [
                 {
                     "id": i.id,
@@ -1324,4 +1487,4 @@ def _recommendations(analyses) -> list[dict]:
     return [library[r] for r in json.loads(agent.output_text).get("recommendation_ids", []) if r in library]
 
 
-spatial_runs = SpatialRunManager()
+spatial_runs = SpatialRunManager(preload_whisper=True)
