@@ -70,6 +70,8 @@ def main() -> int:
     ap.add_argument("--start", action="store_true", help="open the live session before streaming")
     ap.add_argument("--fast", action="store_true", help="send without waiting 200 ms between batches")
     ap.add_argument("--gap-at", type=int, default=None, help="source ms where samples go missing")
+    ap.add_argument("--notify", choices=("simulated", "telegram"), default="simulated",
+                    help="caregiver channel for the session --start opens")
     ap.add_argument("--gap-ms", type=int, default=1000)
     args = ap.parse_args()
 
@@ -78,7 +80,7 @@ def main() -> int:
     with httpx.Client(base_url=args.base, timeout=10) as client:
         if args.start:
             r = client.post("/api/spatial/live", json={"patient_id": args.patient, "device_id": args.device,
-                                                       "source": "fake_esp32"})
+                                                       "source": "fake_esp32", "notification_mode": args.notify})
             r.raise_for_status()
             print(f"live session {r.json()['id']}")
         boot_id = uuid.uuid4().hex[:12]

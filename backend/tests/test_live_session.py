@@ -57,7 +57,7 @@ class LiveSessionTest(unittest.TestCase):
         """Start a live session, send every batch from a worker thread like the HTTP route, Stop."""
         async def go():
             m = SpatialRunManager(session_factory=self.db, live_wearer_cancel_seconds=0.2, caregiver_ack_seconds=0.2)
-            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32", "simulated")
             replies = []
             for batch in device_batches(scenario_id, **gap):
                 replies.append(await asyncio.to_thread(m.ingest_live, sid, "boot-1", batch))
@@ -99,7 +99,7 @@ class LiveSessionTest(unittest.TestCase):
     def test_a_slow_batch_with_continuous_samples_does_not_reset(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db)
-            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32", "simulated")
             for n, batch in enumerate(device_batches("S1")):
                 if n == 12:
                     await asyncio.sleep(1.5)  # the network stalls; the device clock and seq do not jump
@@ -115,7 +115,7 @@ class LiveSessionTest(unittest.TestCase):
     def test_after_a_gap_the_laptop_says_detection_unavailable_until_the_window_refills(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db)
-            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32", "simulated")
             labels = []
             for batch in device_batches("S1", gap_at_ms=4000, gap_ms=500):
                 await asyncio.to_thread(m.ingest_live, sid, "boot-1", batch)
@@ -131,7 +131,7 @@ class LiveSessionTest(unittest.TestCase):
     def test_resent_batch_is_not_fed_twice_and_another_boot_is_rejected(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db)
-            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32", "simulated")
             first = next(device_batches("S1"))
             a = await asyncio.to_thread(m.ingest_live, sid, "boot-1", first)
             b = await asyncio.to_thread(m.ingest_live, sid, "boot-1", first)
@@ -147,7 +147,7 @@ class LiveSessionTest(unittest.TestCase):
     def test_one_run_at_a_time_across_replay_and_live(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db, realtime=False, run_timeout_seconds=30)
-            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32", "simulated")
             with self.assertRaises(RunAlreadyActive):
                 await m.start("S1")
             await m.stop(sid)
@@ -166,7 +166,7 @@ class LiveSessionTest(unittest.TestCase):
     def test_snapshot_says_device_silent_before_any_sample(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db)
-            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32", "simulated")
             snap = session_snapshot(sid, self.db)
             await m.stop(sid)
             return snap
@@ -198,7 +198,7 @@ class LiveRouteTest(unittest.TestCase):
         chunks = list(fake_esp32.batches(full, None, 0))
         auth = {"Authorization": "Bearer device-secret"}
         with TestClient(app, headers=auth) as client:
-            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32"}).json()["id"]
+            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32", "notification_mode": "simulated"}).json()["id"]
             try:
                 ok = client.post("/api/sensor/batch", json=fake_esp32.payload(chunks[0], 1, "fake-esp32", "b1", 0, 0))
                 self.assertEqual(ok.status_code, 200)
@@ -230,7 +230,7 @@ class ClockRouteTest(LiveRouteTest):
         device_now = lambda: round(time.monotonic() * 1000 - device_zero)
         ident = {"device_id": "fake-esp32", "boot_id": "b1"}
         with TestClient(app, headers={"Authorization": "Bearer device-secret"}) as client:
-            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32"}).json()["id"]
+            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32", "notification_mode": "simulated"}).json()["id"]
             try:
                 self.assertEqual(client.post("/api/sensor/clock/report", json={**ident, "rounds": [
                     {"t0": 1, "t1": 2, "t2": 3, "t3": 4}]}).status_code, 422)

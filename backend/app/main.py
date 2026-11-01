@@ -34,12 +34,16 @@ from app.config import (
     SVM_SWAY_THRESHOLD,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
+    TELEGRAM_CHAT_ID_1,
+    TELEGRAM_CHAT_ID_2,
+    TELEGRAM_SEND_TIMEOUT_SECONDS,
     TFLITE_MODEL_PATH,
     WINDOW_SIZE,
 )
 from app.database import init_db
 from app.services.broadcaster import broadcaster
 from app.services.spatial_runs import spatial_runs
+from app.services.telegram_channel import TelegramNotifier, poll_forever
 
 _startup_logger = logging.getLogger("vesti_care.startup")
 
@@ -76,7 +80,19 @@ async def lifespan(app: FastAPI):
         _startup_logger.info("  Spatial runs marked Interrupted after restart: %d", interrupted)
     broadcaster.set_loop(asyncio.get_running_loop())
 
+    poller = None
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID_1:
+        telegram = TelegramNotifier(TELEGRAM_BOT_TOKEN, {"contact_1": TELEGRAM_CHAT_ID_1, "contact_2": TELEGRAM_CHAT_ID_2},
+                                    timeout_seconds=TELEGRAM_SEND_TIMEOUT_SECONDS)
+        spatial_runs.use_telegram(telegram)
+        poller = asyncio.create_task(poll_forever(telegram, spatial_runs))
+        _startup_logger.info("  Live caregiver channel: Telegram, contacts configured: %s",
+                             ", ".join(sorted(telegram.configured_contacts())))
+
     yield
+
+    if poller is not None:
+        poller.cancel()
 
 
 app = FastAPI(

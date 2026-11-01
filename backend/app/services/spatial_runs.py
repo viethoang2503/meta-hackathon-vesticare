@@ -100,6 +100,10 @@ class LiveRunEnded(Exception):
     pass
 
 
+class LiveNotReady(Exception):
+    """A live session that sends for real needs both Telegram contacts (MVP2.md, Live ready)."""
+
+
 # A live session has no measured position (MVP2.md, Mục tiêu và phạm vi).
 # MVP2.md M6: data is labelled by where it came from, so a recording replayed through the
 # fake device is never shown as this project's ESP32.
@@ -253,7 +257,9 @@ class SpatialRunManager:
         self._clocks: dict[tuple[str, str], dict] = {}  # (device_id, boot_id) -> latest mapping
         self._loop: asyncio.AbstractEventLoop | None = None
         self._grace = late_help_grace_seconds
-        self._notifier = notifier or SimulatedNotifier()
+        self._notifier_override = notifier  # tests: one notifier for every session
+        self._telegram = None               # set by use_telegram() when the bot is configured
+        self._session_notifiers: dict[str, object] = {}
         self._send_timeout = send_timeout_seconds
         self._incident_tasks: dict[str, set[asyncio.Task]] = {}
         self._incident_cfg: dict[str, IncidentConfig] = {}
@@ -272,6 +278,33 @@ class SpatialRunManager:
             db.commit()
             return len(stale)
 
+    def use_telegram(self, notifier) -> None:
+        self._telegram = notifier
+
+    def _notifier_for(self, session_id: str):
+        return self._session_notifiers.get(session_id) or SimulatedNotifier()
+
+    def _pick_notifier(self, kind: str, notification_mode: str):
+        """Replay never sends for real. A live session sends through Telegram unless simulated was
+        chosen explicitly, and then only with both contacts configured."""
+        if self._notifier_override is not None:
+            return self._notifier_override
+        if kind == "replay" or notification_mode == "simulated":
+            return SimulatedNotifier()
+        if self._telegram is None or not {"contact_1", "contact_2"} <= self._telegram.configured_contacts():
+            raise LiveNotReady("contact setup")
+        return self._telegram
+
+    async def telegram_ack(self, incident_id: int, contact: str, message_id) -> dict | None:
+        """A tap on Acknowledge counts only on the message that alerted this contact about this incident."""
+        with self._db() as db:
+            sent = [json.loads(a.detail).get("message_id") for a in db.query(SpatialAction).filter(
+                SpatialAction.incident_id == incident_id, SpatialAction.target == contact,
+                SpatialAction.kind.in_(("notify", "escalate")))]
+        if message_id is None or message_id not in sent:
+            return {"incident_id": incident_id, "applied": False, "incident_state": None, "reason": "not_this_message"}
+        return await self.acknowledge(incident_id, f"telegram:{contact}")
+
     def _refuse_if_busy(self, db) -> None:
         """One run at a time, and no new run while the last one still has an incident in progress."""
         active = db.query(SpatialSession).filter(SpatialSession.status == "Running").first()
@@ -283,6 +316,7 @@ class SpatialRunManager:
 
     async def start(self, scenario_id: str) -> str:
         scenario = load_scenario(scenario_id)
+        notifier = self._pick_notifier("replay", "simulated")
         with self._db() as db:
             self._refuse_if_busy(db)
             session_id = uuid.uuid4().hex
@@ -299,6 +333,7 @@ class SpatialRunManager:
         self._locks[session_id] = threading.Lock()
         self._stop_requested[session_id] = asyncio.Event()
         self._incident_cfg[session_id] = IncidentConfig(self._wearer_cancel, self._caregiver_ack, self._grace)
+        self._session_notifiers[session_id] = notifier
         self._runs[session_id] = asyncio.create_task(self._replay(session_id, scenario))
         _hint(session_id, "started")
         return session_id
@@ -327,9 +362,11 @@ class SpatialRunManager:
         if self._dispatches:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
 
-    async def start_live(self, patient_id: int, device_id: str, source: str = "esp32") -> str:
+    async def start_live(self, patient_id: int, device_id: str, source: str = "esp32",
+                         notification_mode: str = "telegram") -> str:
         """Start a live session for one device. Samples arrive through ingest_live; the boot id is
         pinned by the first batch. One active run at a time, replay or live."""
+        notifier = self._pick_notifier("live", notification_mode)
         with self._db() as db:
             self._refuse_if_busy(db)
             session_id = uuid.uuid4().hex
@@ -342,7 +379,7 @@ class SpatialRunManager:
                 "max_sample_gap_ms": MAX_SAMPLE_GAP_MS,
                 "device_silent_seconds": LIVE_DEVICE_SILENT_SECONDS,
                 "model_source": self._detector.model_source,
-                "notification_mode": self._notifier.channel,
+                "notification_mode": notifier.channel,
                 "source": source,
                 "source_label": LIVE_SOURCE_LABELS[source],
             }
@@ -357,6 +394,7 @@ class SpatialRunManager:
         self._locks[session_id] = threading.Lock()
         self._stop_requested[session_id] = asyncio.Event()
         self._incident_cfg[session_id] = IncidentConfig(self._live_wearer_cancel, self._caregiver_ack, self._grace)
+        self._session_notifiers[session_id] = notifier
         self._live[session_id] = LiveRun(
             patient_id=patient_id, device_id=device_id, wearer_cancel=self._live_wearer_cancel,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
@@ -645,7 +683,7 @@ class SpatialRunManager:
     def _release_if_idle(self, session_id: str) -> None:
         if session_id in self._runs or self._incident_tasks.get(session_id):
             return
-        for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg):
+        for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg, self._session_notifiers):
             registry.pop(session_id, None)
 
     def _dispatch(self, session_id: str, lock: threading.Lock, follow: dict) -> None:
@@ -694,7 +732,7 @@ class SpatialRunManager:
             session_id=session_id, incident_id=row.id, kind="notify", target="contact_1",
             action_key=f"initial:{row.id}:contact_1", created_at=now,
             detail=json.dumps({"template": "notify_initial", "status": "scheduled", "alert_reason": reason,
-                               "channel": self._notifier.channel, "after_wearer_window_s": cfg.wearer_cancel}),
+                               "channel": self._notifier_for(session_id).channel, "after_wearer_window_s": cfg.wearer_cancel}),
         )
         db.add(action)
         db.flush()
@@ -708,7 +746,7 @@ class SpatialRunManager:
             session_id=session_id, incident_id=row.id, kind="escalate", target="contact_2",
             action_key=f"escalate:{row.id}:contact_2", created_at=now,
             detail=json.dumps({"template": "notify_escalation", "status": "scheduled", "escalation_reason": reason,
-                               "channel": self._notifier.channel,
+                               "channel": self._notifier_for(session_id).channel,
                                "after_caregiver_window_s": self._incident_cfg[session_id].caregiver_ack}),
         )
         db.add(action)
@@ -741,7 +779,7 @@ class SpatialRunManager:
         if prepared is None:
             return
         try:
-            outcome = await asyncio.wait_for(asyncio.to_thread(self._notifier.send, *prepared), self._send_timeout)
+            outcome = await asyncio.wait_for(asyncio.to_thread(self._notifier_for(session_id).send, *prepared), self._send_timeout)
         except asyncio.TimeoutError:
             outcome = {"status": "unknown", "error": f"no answer within {self._send_timeout} s"}
         except Exception as err:
@@ -799,7 +837,7 @@ class SpatialRunManager:
             action = SpatialAction(session_id=session_id, incident_id=row.id, kind="late_ok", target=contact,
                                    action_key=f"late_ok:{row.id}:{contact}", created_at=_utcnow(),
                                    detail=json.dumps({"template": "notify_late_ok", "status": "scheduled",
-                                                      "channel": self._notifier.channel}))
+                                                      "channel": self._notifier_for(session_id).channel}))
             db.add(action)
             db.flush()
             ids.append(action.id)

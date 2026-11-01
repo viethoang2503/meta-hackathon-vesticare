@@ -89,6 +89,9 @@ CORS_ORIGINS = [
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# MVP 2 contacts (docs/spatial/MVP2_ARCHITECTURE.md). Contact 1 falls back to the legacy chat id.
+TELEGRAM_CHAT_ID_1 = os.getenv("TELEGRAM_CHAT_ID_1", "") or TELEGRAM_CHAT_ID
+TELEGRAM_CHAT_ID_2 = os.getenv("TELEGRAM_CHAT_ID_2", "")
 
 # ===========================================================================
 # DEVICE AUTHENTICATION
