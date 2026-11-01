@@ -267,6 +267,10 @@ class MigrationTest(unittest.TestCase):
                   end_reason VARCHAR, started_at DATETIME NOT NULL, ended_at DATETIME, source_offset_ms INTEGER NOT NULL,
                   recording_ended BOOLEAN NOT NULL, model_source VARCHAR NOT NULL);
                 INSERT INTO spatial_sessions VALUES ('old1', 'S2', 'Stopped', 'user_stop', '2026-10-29 10:00:00', NULL, 28400, 1, 'keras');
+                CREATE TABLE spatial_actions (id INTEGER PRIMARY KEY, session_id VARCHAR NOT NULL, incident_id INTEGER,
+                  kind VARCHAR NOT NULL, target VARCHAR, detail TEXT, created_at DATETIME NOT NULL,
+                  CONSTRAINT uq_action_once UNIQUE (incident_id, kind, target));
+                INSERT INTO spatial_actions VALUES (1, 'old1', 7, 'notify', 'contact_1', '{}', '2026-10-29 10:00:30');
             """)
             con.commit()
             con.close()
@@ -282,6 +286,11 @@ class MigrationTest(unittest.TestCase):
                 row = conn.execute(text("SELECT id, kind, scenario_id, status FROM spatial_sessions")).one()
                 conn.execute(text("INSERT INTO spatial_sessions (id, kind, scenario_id, status, started_at, source_offset_ms, "
                                   "recording_ended, model_source) VALUES ('live1', 'live', NULL, 'Stopped', '2026-10-31', 0, 0, 'keras')"))
+                for n in (2, 3):  # MVP 2 logs every self-report; the old constraint would refuse the second
+                    conn.execute(text(f"INSERT INTO spatial_actions (id, session_id, incident_id, kind, target, created_at) "
+                                      f"VALUES ({n}, 'old1', 7, 'self_report', 'wearer', '2026-10-31')"))
+                kept = conn.execute(text("SELECT kind, action_key FROM spatial_actions WHERE id = 1")).one()
+            self.assertEqual(tuple(kept), ("notify", None))
             self.assertEqual(cols["scenario_id"][3], 0)
             self.assertEqual(tuple(row), ("old1", "replay", "S2", "Stopped"))
             self.assertIn("live_stats", cols)

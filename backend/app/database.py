@@ -81,6 +81,8 @@ def _upgrade_db() -> None:
         "ALTER TABLE spatial_sessions ADD COLUMN config_snapshot TEXT",
         "ALTER TABLE spatial_sessions ADD COLUMN live_stats TEXT",
         "ALTER TABLE spatial_sessions ADD COLUMN last_sample_at DATETIME",
+        "ALTER TABLE alert_events ADD COLUMN alert_reason TEXT",
+        "ALTER TABLE alert_events ADD COLUMN first_notify_at DATETIME",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -90,31 +92,39 @@ def _upgrade_db() -> None:
             except Exception:
                 # Column already exists or other harmless error — skip
                 conn.rollback()
-    _allow_null_scenario_id()
-
-
-def _allow_null_scenario_id() -> None:
-    """A live session has no scenario. SQLite cannot drop NOT NULL in place, so an MVP 1
-    spatial_sessions table is rebuilt with SQLite's create-copy-drop-rename procedure.
-    Other tables reference it by name, which the rename keeps."""
     from sqlalchemy import text
-    from sqlalchemy.schema import CreateTable
 
-    from app.models.schemas import SpatialSession
+    from app.models.schemas import SpatialAction, SpatialSession
 
     with engine.connect() as conn:
-        columns = conn.execute(text("PRAGMA table_info(spatial_sessions)")).fetchall()
-        if not any(c[1] == "scenario_id" and c[3] for c in columns):
-            return
-        names = ", ".join(c[1] for c in columns)
-        ddl = str(CreateTable(SpatialSession.__table__).compile(engine))
-        conn.execute(text("PRAGMA foreign_keys=OFF"))
-        conn.execute(text(ddl.replace("CREATE TABLE spatial_sessions", "CREATE TABLE spatial_sessions_new", 1)))
-        conn.execute(text(f"INSERT INTO spatial_sessions_new ({names}) SELECT {names} FROM spatial_sessions"))
-        conn.execute(text("DROP TABLE spatial_sessions"))
-        conn.execute(text("ALTER TABLE spatial_sessions_new RENAME TO spatial_sessions"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_spatial_sessions_status ON spatial_sessions (status)"))
-        conn.commit()
+        # A live session has no scenario: MVP 1 created scenario_id NOT NULL.
+        if any(c[1] == "scenario_id" and c[3] for c in conn.execute(text("PRAGMA table_info(spatial_sessions)"))):
+            _rebuild(conn, SpatialSession.__table__)
+        # MVP 2 logs many self-reports per incident and keys one-off actions instead.
+        ddl = conn.execute(text("SELECT sql FROM sqlite_master WHERE name = 'spatial_actions'")).scalar() or ""
+        if "uq_action_once" in ddl:
+            _rebuild(conn, SpatialAction.__table__)
+
+
+def _rebuild(conn, table) -> None:
+    """SQLite cannot drop a constraint in place, so the table is rebuilt with SQLite's
+    create-copy-drop-rename procedure. Other tables reference it by name, which the rename
+    keeps. Columns the new table lacks are dropped; new ones start null."""
+    from sqlalchemy import text
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    name = table.name
+    old = {c[1] for c in conn.execute(text(f"PRAGMA table_info({name})"))}
+    names = ", ".join(c.name for c in table.columns if c.name in old)
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    ddl = str(CreateTable(table).compile(engine))
+    conn.execute(text(ddl.replace(f"CREATE TABLE {name}", f"CREATE TABLE {name}_new", 1)))
+    conn.execute(text(f"INSERT INTO {name}_new ({names}) SELECT {names} FROM {name}"))
+    conn.execute(text(f"DROP TABLE {name}"))
+    conn.execute(text(f"ALTER TABLE {name}_new RENAME TO {name}"))
+    for index in table.indexes:
+        conn.execute(text(str(CreateIndex(index).compile(engine)).replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1)))
+    conn.commit()
 
 
 def init_db():

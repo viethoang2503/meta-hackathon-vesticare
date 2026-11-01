@@ -6,7 +6,7 @@ Moi lop (class) tuong ung voi 1 bang. Moi thuoc tinh (attribute) tuong ung voi 1
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -107,6 +107,8 @@ class AlertEvent(Base):
     spatial_state = Column(String, nullable=True)  # awaiting_wearer | cancelled_by_wearer | alerted
     wearer_deadline_at = Column(DateTime, nullable=True)
     caregiver_deadline_at = Column(DateTime, nullable=True)
+    alert_reason = Column(String, nullable=True)  # timeout | wearer_help
+    first_notify_at = Column(DateTime, nullable=True)
 
     patient = relationship("Patient", back_populates="alerts")
 
@@ -157,11 +159,15 @@ class SpatialAnalysis(Base):
 
 
 class SpatialAction(Base):
-    """Append-only log of what the policy did: notifications, acks, self-reports, advisories."""
+    """Append-only log of what the policy did: notifications, acks, self-reports, advisories.
+
+    `action_key` names an action that may happen once (initial:<incident>:contact_1,
+    escalate:<incident>:contact_2, late_ok:<incident>:<contact>, ack:<incident>:<actor>);
+    the unique index turns a second attempt into a no-op. Repeatable rows leave it null."""
     __tablename__ = "spatial_actions"
-    __table_args__ = (UniqueConstraint("incident_id", "kind", "target", name="uq_action_once"),)
 
     id = Column(Integer, primary_key=True)
+    action_key = Column(String, nullable=True, unique=True)
     session_id = Column(String, ForeignKey("spatial_sessions.id"), nullable=False, index=True)
     incident_id = Column(Integer, ForeignKey("alert_events.id"), nullable=True)
     kind = Column(String, nullable=False)  # notify | escalate | ack | self_report | advisory

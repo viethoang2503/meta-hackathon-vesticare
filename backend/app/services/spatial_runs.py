@@ -43,7 +43,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy.exc import IntegrityError
 
 from datetime import timedelta
 
@@ -55,6 +54,7 @@ from app.config import (
     ANALYSIS_TIMEOUT_SECONDS,
     FIXES_LIBRARY_PATH,
     IMU_DETAIL_MAX_SECONDS,
+    LATE_HELP_GRACE_SECONDS,
     LIVE_DATA_DIR,
     LIVE_DEVICE_SILENT_SECONDS,
     LIVE_RUN_TIMEOUT_SECONDS,
@@ -62,6 +62,7 @@ from app.config import (
     SAMPLING_RATE,
     SCENARIOS_DIR,
     SPATIAL_RUN_TIMEOUT_SECONDS,
+    TELEGRAM_SEND_TIMEOUT_SECONDS,
     WEARER_CANCEL_WINDOW_SECONDS,
     WINDOW_SIZE,
 )
@@ -72,6 +73,9 @@ from app.services.fall_detection import FallDetectionService, fall_detection_ser
 from app.services import muse_client, sam_client
 from app.services.incident_agent import run_agent
 from app.services.clock_sync import best_mapping
+from app.services.incident_policy import ALERTED, CANCELLED, decide_deadline, decide_reply, late_ok_targets
+from app.services.notifier import SimulatedNotifier
+from app.services.notify_templates import render
 from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
 from app.services.monitoring import StreamMonitor
 from app.services.scene_context import frame_near, home_manifest, location_at
@@ -103,6 +107,15 @@ LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated devic
 UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
 # session_ms is device time mapped onto the session clock, nan while the device is unsynchronized.
 JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "session_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
+
+
+@dataclass(frozen=True)
+class IncidentConfig:
+    """Pinned per session at Start (MVP2.md, Tham số P0)."""
+
+    wearer_cancel: float
+    caregiver_ack: float
+    grace: float
 
 
 @dataclass
@@ -215,6 +228,9 @@ class SpatialRunManager:
         live_wearer_cancel_seconds: float = LIVE_WEARER_CANCEL_SECONDS,
         live_run_timeout_seconds: float = LIVE_RUN_TIMEOUT_SECONDS,
         live_data_dir: Path | None = None,
+        late_help_grace_seconds: float = LATE_HELP_GRACE_SECONDS,
+        notifier=None,
+        send_timeout_seconds: float = TELEGRAM_SEND_TIMEOUT_SECONDS,
     ) -> None:
         self._realtime = realtime
         self._run_timeout = run_timeout_seconds
@@ -236,6 +252,11 @@ class SpatialRunManager:
         self._live: dict[str, LiveRun] = {}
         self._clocks: dict[tuple[str, str], dict] = {}  # (device_id, boot_id) -> latest mapping
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._grace = late_help_grace_seconds
+        self._notifier = notifier or SimulatedNotifier()
+        self._send_timeout = send_timeout_seconds
+        self._incident_tasks: dict[str, set[asyncio.Task]] = {}
+        self._incident_cfg: dict[str, IncidentConfig] = {}
 
     def _db(self):
         # Looked up per call: tests swap database.SessionLocal after this module is imported.
@@ -251,12 +272,19 @@ class SpatialRunManager:
             db.commit()
             return len(stale)
 
+    def _refuse_if_busy(self, db) -> None:
+        """One run at a time, and no new run while the last one still has an incident in progress."""
+        active = db.query(SpatialSession).filter(SpatialSession.status == "Running").first()
+        if active is not None:
+            raise RunAlreadyActive(active.id)
+        finishing = next((sid for sid, tasks in self._incident_tasks.items() if tasks), None)
+        if finishing is not None:
+            raise RunAlreadyActive(finishing)
+
     async def start(self, scenario_id: str) -> str:
         scenario = load_scenario(scenario_id)
         with self._db() as db:
-            active = db.query(SpatialSession).filter(SpatialSession.status == "Running").first()
-            if active is not None:
-                raise RunAlreadyActive(active.id)
+            self._refuse_if_busy(db)
             session_id = uuid.uuid4().hex
             db.add(SpatialSession(
                 id=session_id,
@@ -270,6 +298,7 @@ class SpatialRunManager:
             db.commit()
         self._locks[session_id] = threading.Lock()
         self._stop_requested[session_id] = asyncio.Event()
+        self._incident_cfg[session_id] = IncidentConfig(self._wearer_cancel, self._caregiver_ack, self._grace)
         self._runs[session_id] = asyncio.create_task(self._replay(session_id, scenario))
         _hint(session_id, "started")
         return session_id
@@ -289,10 +318,12 @@ class SpatialRunManager:
             await asyncio.gather(task, return_exceptions=True)
 
     async def wait(self, session_id: str) -> None:
-        """Wait for a run's replay task to finish (used by tests and shutdown)."""
+        """Wait for a run's replay task and its incidents to finish (used by tests and shutdown)."""
         task = self._runs.get(session_id)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
+        while self._incident_tasks.get(session_id):
+            await asyncio.gather(*list(self._incident_tasks[session_id]), return_exceptions=True)
         if self._dispatches:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
 
@@ -300,19 +331,18 @@ class SpatialRunManager:
         """Start a live session for one device. Samples arrive through ingest_live; the boot id is
         pinned by the first batch. One active run at a time, replay or live."""
         with self._db() as db:
-            active = db.query(SpatialSession).filter(SpatialSession.status == "Running").first()
-            if active is not None:
-                raise RunAlreadyActive(active.id)
+            self._refuse_if_busy(db)
             session_id = uuid.uuid4().hex
             config = {
                 "wearer_cancel_seconds": self._live_wearer_cancel,
                 "caregiver_ack_seconds": self._caregiver_ack,
+                "late_help_grace_seconds": self._grace,
                 "sampling_rate_hz": SAMPLING_RATE,
                 "window_size": WINDOW_SIZE,
                 "max_sample_gap_ms": MAX_SAMPLE_GAP_MS,
                 "device_silent_seconds": LIVE_DEVICE_SILENT_SECONDS,
                 "model_source": self._detector.model_source,
-                "notification_mode": "simulated",
+                "notification_mode": self._notifier.channel,
                 "source": source,
                 "source_label": LIVE_SOURCE_LABELS[source],
             }
@@ -326,6 +356,7 @@ class SpatialRunManager:
         self._loop = asyncio.get_running_loop()
         self._locks[session_id] = threading.Lock()
         self._stop_requested[session_id] = asyncio.Event()
+        self._incident_cfg[session_id] = IncidentConfig(self._live_wearer_cancel, self._caregiver_ack, self._grace)
         self._live[session_id] = LiveRun(
             patient_id=patient_id, device_id=device_id, wearer_cancel=self._live_wearer_cancel,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
@@ -349,8 +380,7 @@ class SpatialRunManager:
                 with run.ingest_lock:
                     run.monitor.close()
             self._runs.pop(session_id, None)
-            self._locks.pop(session_id, None)
-            self._stop_requested.pop(session_id, None)
+            self._release_if_idle(session_id)
 
     def record_clock(self, device_id: str, boot_id: str, rounds: list[dict]) -> dict | None:
         """Stores the device's latest clock mapping. A new mapping applies to samples received
@@ -405,8 +435,7 @@ class SpatialRunManager:
                 db.commit()
         _hint(session_id, "incident" if opened else "progress")
         for incident_id in opened:
-            self._loop.call_soon_threadsafe(
-                self._background, self._wearer_countdown(session_id, lock, incident_id, run.wearer_cancel))
+            self._loop.call_soon_threadsafe(self._track, session_id, self._incident_timeline(session_id, lock, incident_id))
         return {"session_id": session_id, "accepted": len(steps), "rejected": rejected,
                 "readiness": stats["readiness"], "incidents_opened": opened}
 
@@ -455,7 +484,7 @@ class SpatialRunManager:
                     for advisory in advisories:
                         self._background(self._confirm_advisory(session_id, lock, scenario, *advisory))
                     for incident_id in opened:
-                        self._background(self._wearer_countdown(session_id, lock, incident_id))
+                        self._track(session_id, self._incident_timeline(session_id, lock, incident_id))
                         self._background(self._analyse(session_id, lock, scenario, incident_id))
                 try:
                     await asyncio.wait_for(stop_requested.wait(), TICK_SECONDS if self._realtime else 0.01)
@@ -471,8 +500,7 @@ class SpatialRunManager:
         finally:
             monitor.close()
             self._runs.pop(session_id, None)
-            self._locks.pop(session_id, None)
-            self._stop_requested.pop(session_id, None)
+            self._release_if_idle(session_id)
 
     def _ingest(self, lock, session_id, scenario, monitor, incident_rows, route_state, start, end, started=None):
         """Runs in a worker thread. Returns (new incident ids, shown advisories), or None once the run has ended.
@@ -598,31 +626,184 @@ class SpatialRunManager:
         self._dispatches.add(task)
         task.add_done_callback(self._dispatches.discard)
 
-    async def _wearer_countdown(self, session_id: str, lock: threading.Lock, incident_id: int,
-                                wearer_cancel: float | None = None) -> None:
-        wearer_cancel = self._wearer_cancel if wearer_cancel is None else wearer_cancel
-        await asyncio.sleep(wearer_cancel)
-        if await asyncio.to_thread(self._alert_if_unanswered, lock, session_id, incident_id, wearer_cancel):
-            await asyncio.sleep(self._caregiver_ack)
-            await asyncio.to_thread(self._escalate_if_unacknowledged, lock, session_id, incident_id)
+    # --- Incident lifecycle (docs/spatial/MVP2.md, "Policy do code quyết định") ---------------
+    # Every decision is taken under the run lock and committed before any message goes out.
+    # These tasks outlive Stop: an opened incident finishes its window, sends and escalation.
 
-    def _escalate_if_unacknowledged(self, lock: threading.Lock, session_id: str, incident_id: int) -> None:
+    def _track(self, session_id: str, coro) -> None:
+        task = asyncio.create_task(coro)
+        tasks = self._incident_tasks.setdefault(session_id, set())
+        tasks.add(task)
+
+        def done(t):
+            tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.error("incident task for %s failed", session_id, exc_info=t.exception())
+            self._release_if_idle(session_id)
+        task.add_done_callback(done)
+
+    def _release_if_idle(self, session_id: str) -> None:
+        if session_id in self._runs or self._incident_tasks.get(session_id):
+            return
+        for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg):
+            registry.pop(session_id, None)
+
+    def _dispatch(self, session_id: str, lock: threading.Lock, follow: dict) -> None:
+        for action_id in follow.get("deliver", []):
+            self._track(session_id, self._deliver(session_id, lock, action_id))
+        if follow.get("caregiver_timer"):
+            self._track(session_id, self._caregiver_timer(session_id, lock, follow["caregiver_timer"]))
+
+    async def _incident_timeline(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
+        """Wakes at the wearer deadline D. A cancelled incident stays open until D + grace so a HELP
+        captured before D can still raise the alert."""
+        cfg = self._incident_cfg[session_id]
+        deadline = await asyncio.to_thread(self._deadline_of, incident_id)
+        while (remaining := (deadline - _utcnow()).total_seconds()) > 0:
+            await asyncio.sleep(remaining)
+        follow = await asyncio.to_thread(self._on_deadline, lock, session_id, incident_id)
+        self._dispatch(session_id, lock, follow)
+        if follow.get("state") == CANCELLED:
+            await asyncio.sleep(cfg.grace)
+
+    def _deadline_of(self, incident_id: int) -> datetime:
+        with self._db() as db:
+            return db.get(AlertEvent, incident_id).wearer_deadline_at
+
+    def _on_deadline(self, lock, session_id, incident_id) -> dict:
         with lock, self._db() as db:
-            session = db.get(SpatialSession, session_id)
-            row = db.get(AlertEvent, incident_id)
-            if session is None or session.status != "Running" or row.spatial_state != "alerted" or row.is_acknowledged:
-                return
-            db.add(SpatialAction(
-                session_id=session_id, incident_id=incident_id, kind="escalate", target="contact_2",
-                detail=json.dumps({"channel": "simulated", "after_caregiver_window_s": self._caregiver_ack}),
-                created_at=_utcnow(),
-            ))
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                return
+            session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
+            if not _incident_session_ok(session):
+                return {}
+            follow = {"state": row.spatial_state}
+            reason = decide_deadline(row.spatial_state)
+            if reason is not None:
+                follow = self._alert_locked(db, session_id, row, reason)
+            db.commit()
         _hint(session_id, "action")
+        return follow
+
+    def _alert_locked(self, db, session_id: str, row, reason: str) -> dict:
+        """awaiting/cancelled -> alerted, plus the initial send to contact_1. Caller commits."""
+        cfg = self._incident_cfg[session_id]
+        now = _utcnow()
+        row.spatial_state, row.alert_reason, row.first_notify_at = ALERTED, reason, now
+        row.caregiver_deadline_at = now + timedelta(seconds=cfg.caregiver_ack)
+        row.notification_status = "scheduled"
+        action = SpatialAction(
+            session_id=session_id, incident_id=row.id, kind="notify", target="contact_1",
+            action_key=f"initial:{row.id}:contact_1", created_at=now,
+            detail=json.dumps({"template": "notify_initial", "status": "scheduled", "alert_reason": reason,
+                               "channel": self._notifier.channel, "after_wearer_window_s": cfg.wearer_cancel}),
+        )
+        db.add(action)
+        db.flush()
+        return {"state": ALERTED, "deliver": [action.id], "caregiver_timer": row.id}
+
+    def _escalate_locked(self, db, session_id: str, row, reason: str) -> dict:
+        if row.spatial_state != ALERTED or row.is_acknowledged or _action(db, f"escalate:{row.id}:contact_2"):
+            return {}
+        now = _utcnow()
+        action = SpatialAction(
+            session_id=session_id, incident_id=row.id, kind="escalate", target="contact_2",
+            action_key=f"escalate:{row.id}:contact_2", created_at=now,
+            detail=json.dumps({"template": "notify_escalation", "status": "scheduled", "escalation_reason": reason,
+                               "channel": self._notifier.channel,
+                               "after_caregiver_window_s": self._incident_cfg[session_id].caregiver_ack}),
+        )
+        db.add(action)
+        if _late_ok_reported(db, row.id):
+            # The escalation already says the wearer reported OK; no separate update follows.
+            db.add(SpatialAction(session_id=session_id, incident_id=row.id, kind="late_ok", target="contact_2",
+                                 action_key=f"late_ok:{row.id}:contact_2", created_at=now,
+                                 detail=json.dumps({"status": "included_in_alert"})))
+        db.flush()
+        return {"deliver": [action.id]}
+
+    async def _caregiver_timer(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
+        await asyncio.sleep(self._incident_cfg[session_id].caregiver_ack)
+        follow = await asyncio.to_thread(self._escalate_if_unacknowledged, lock, session_id, incident_id, "no_ack")
+        self._dispatch(session_id, lock, follow)
+
+    def _escalate_if_unacknowledged(self, lock, session_id, incident_id, reason) -> dict:
+        with lock, self._db() as db:
+            session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
+            if not _incident_session_ok(session):
+                return {}
+            follow = self._escalate_locked(db, session_id, row, reason)
+            db.commit()
+        if follow:
+            _hint(session_id, "action")
+        return follow
+
+    async def _deliver(self, session_id: str, lock: threading.Lock, action_id: int) -> None:
+        prepared = await asyncio.to_thread(self._prepare_send, lock, session_id, action_id)
+        if prepared is None:
+            return
+        try:
+            outcome = await asyncio.wait_for(asyncio.to_thread(self._notifier.send, *prepared), self._send_timeout)
+        except asyncio.TimeoutError:
+            outcome = {"status": "unknown", "error": f"no answer within {self._send_timeout} s"}
+        except Exception as err:
+            logger.exception("notifier failed for action %s", action_id)
+            outcome = {"status": "failed", "error": type(err).__name__}
+        follow = await asyncio.to_thread(self._record_send, lock, session_id, action_id, outcome)
+        self._dispatch(session_id, lock, follow)
+
+    def _prepare_send(self, lock, session_id, action_id):
+        """(contact, text, incident_id, ack_button) for a scheduled send, rendered from the spec templates."""
+        with lock, self._db() as db:
+            action = db.get(SpatialAction, action_id)
+            row = db.get(AlertEvent, action.incident_id)
+            detail = json.loads(action.detail)
+            values = {"incident_id": row.id, "wearer_channel_status": "Unknown"}
+            if detail["template"] in ("notify_initial", "notify_escalation"):
+                values |= {"event_time": _local_time(row.timestamp), "location_label": "Unknown",
+                           "response_status": _response_status(db, row)}
+            if detail["template"] == "notify_escalation":
+                values["escalation_reason"] = ESCALATION_REASONS[detail["escalation_reason"]]
+            text = render(detail["template"], **values)
+            detail["text"] = text
+            action.detail = json.dumps(detail)
+            prepared = (action.target, text, row.id, detail["template"] != "notify_late_ok")
+            db.commit()
+        return prepared
+
+    def _record_send(self, lock, session_id, action_id, outcome) -> dict:
+        with lock, self._db() as db:
+            action = db.get(SpatialAction, action_id)
+            row = db.get(AlertEvent, action.incident_id)
+            detail = {**json.loads(action.detail), **outcome}
+            action.detail = json.dumps(detail)
+            follow: dict = {"deliver": []}
+            if action.kind == "notify":
+                row.notification_status = outcome["status"]
+                row.notification_sent_at = _utcnow()
+                row.notification_error = outcome.get("error")
+                session = db.get(SpatialSession, session_id)
+                if outcome["status"] == "failed" and _incident_session_ok(session):
+                    follow |= self._escalate_locked(db, session_id, row, "first_contact_failed")
+            if action.kind in ("notify", "escalate") and _late_ok_reported(db, row.id):
+                follow["deliver"] += self._late_ok_locked(db, session_id, row)
+            db.commit()
+        _hint(session_id, "action")
+        return follow
+
+    def _late_ok_locked(self, db, session_id, row) -> list[int]:
+        sends = {a.target: json.loads(a.detail)["status"] for a in db.query(SpatialAction).filter(
+            SpatialAction.incident_id == row.id, SpatialAction.kind.in_(("notify", "escalate")))}
+        done = {a.target for a in db.query(SpatialAction).filter(
+            SpatialAction.incident_id == row.id, SpatialAction.kind == "late_ok")}
+        ids = []
+        for contact in late_ok_targets(sends, done):
+            action = SpatialAction(session_id=session_id, incident_id=row.id, kind="late_ok", target=contact,
+                                   action_key=f"late_ok:{row.id}:{contact}", created_at=_utcnow(),
+                                   detail=json.dumps({"template": "notify_late_ok", "status": "scheduled",
+                                                      "channel": self._notifier.channel}))
+            db.add(action)
+            db.flush()
+            ids.append(action.id)
+        return ids
 
     async def acknowledge(self, incident_id: int, actor_id: str) -> dict | None:
         """The caregiver takes the incident. Returns None for an unknown incident."""
@@ -638,44 +819,21 @@ class SpatialRunManager:
 
     def _record_ack(self, lock, session_id, incident_id, actor_id) -> dict:
         with lock, self._db() as db:
-            session = db.get(SpatialSession, session_id)
-            row = db.get(AlertEvent, incident_id)
+            session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
             result = {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state}
-            if session is None or session.status != "Running":
+            if not _incident_session_ok(session):
                 return {**result, "reason": "run_ended"}
-            if row.spatial_state == "cancelled_by_wearer":
+            if row.spatial_state == CANCELLED:
                 return {**result, "reason": "cancelled_by_wearer"}
             if row.is_acknowledged:
                 return {**result, "reason": "already_recorded"}
             row.is_acknowledged, row.acknowledged_at = True, _utcnow()
             db.add(SpatialAction(session_id=session_id, incident_id=incident_id, kind="ack", target=actor_id,
-                                 detail=json.dumps({"by": actor_id}), created_at=_utcnow()))
+                                 action_key=f"ack:{incident_id}:{actor_id}", detail=json.dumps({"by": actor_id}),
+                                 created_at=_utcnow()))
             db.commit()
         _hint(session_id, "action")
         return {**result, "applied": True, "reason": None}
-
-    def _alert_if_unanswered(self, lock: threading.Lock, session_id: str, incident_id: int, wearer_cancel: float) -> bool:
-        """Simulated sink: the notification is the action-log row. Nothing leaves the process."""
-        with lock, self._db() as db:
-            session = db.get(SpatialSession, session_id)
-            row = db.get(AlertEvent, incident_id)
-            if session is None or session.status != "Running" or row.spatial_state != "awaiting_wearer":
-                return False
-            row.spatial_state = "alerted"
-            row.notification_status = "simulated"
-            row.notification_sent_at = _utcnow()
-            row.caregiver_deadline_at = _utcnow() + timedelta(seconds=self._caregiver_ack)
-            db.add(SpatialAction(
-                session_id=session_id,
-                incident_id=incident_id,
-                kind="notify",
-                target="contact_1",
-                detail=json.dumps({"channel": "simulated", "after_wearer_window_s": wearer_cancel}),
-                created_at=_utcnow(),
-            ))
-            db.commit()
-        _hint(session_id, "action")
-        return True
 
     async def _analyse(self, session_id: str, lock: threading.Lock, scenario: Scenario, incident_id: int) -> None:
         try:
@@ -782,42 +940,55 @@ class SpatialRunManager:
         _hint(session_id, "analysis")
 
     async def wearer_ok(self, incident_id: int) -> dict | None:
-        """The wearer pressed "I'm OK". Returns None for an unknown incident."""
+        """The MVP 1 HUD button: a clear OK, captured now."""
+        return await self.wearer_reply(incident_id, "ok", _utcnow())
+
+    async def wearer_reply(self, incident_id: int, reply: str, capture_end: datetime | None) -> dict | None:
+        """A classified answer from the wearer (U4 feeds STT results here). Returns None for an
+        unknown incident. `capture_end` is when the audio ended, already checked against the clock."""
         with self._db() as db:
             row = db.get(AlertEvent, incident_id)
             if row is None or row.session_id is None:
                 return None
-            session_id = row.session_id
+            session_id, state = row.session_id, row.spatial_state
         lock = self._locks.get(session_id)
         if lock is None:
-            return {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state, "reason": "run_ended"}
-        return await asyncio.to_thread(self._record_wearer_ok, lock, session_id, incident_id)
+            return {"incident_id": incident_id, "applied": False, "incident_state": state, "reason": "run_ended"}
+        result, follow = await asyncio.to_thread(self._record_reply, lock, session_id, incident_id, reply, capture_end)
+        self._dispatch(session_id, lock, follow)
+        return result
 
-    def _record_wearer_ok(self, lock: threading.Lock, session_id: str, incident_id: int) -> dict:
+    def _record_reply(self, lock, session_id, incident_id, reply, capture_end):
         with lock, self._db() as db:
-            session = db.get(SpatialSession, session_id)
-            row = db.get(AlertEvent, incident_id)
-            if session is None or session.status != "Running":
-                return {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state, "reason": "run_ended"}
-            cancels = row.spatial_state == "awaiting_wearer"
-            if cancels:
-                row.spatial_state = "cancelled_by_wearer"
+            session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
+            result = {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state}
+            if not _incident_session_ok(session):
+                return {**result, "reason": "run_ended"}, {}
+            grace = timedelta(seconds=self._incident_cfg[session_id].grace)
+            decision = decide_reply(row.spatial_state, reply, row.wearer_deadline_at, grace, _utcnow(), capture_end)
+            follow: dict = {"deliver": []}
+            if decision.alert:
+                follow |= self._alert_locked(db, session_id, row, decision.alert)
+            if decision.cancel:
+                row.spatial_state = CANCELLED
+            applied, reason = decision.applied, decision.reason
+            if decision.late_ok and _late_ok_reported(db, row.id):
+                applied, reason = False, "already_recorded"  # a repeated OK is logged, nothing more is sent
             db.add(SpatialAction(
-                session_id=session_id,
-                incident_id=incident_id,
-                kind="self_report",
-                target="wearer",
-                detail=json.dumps({"response": "ok", "cancelled_alert": cancels}),
+                session_id=session_id, incident_id=incident_id, kind="self_report", target="wearer",
                 created_at=_utcnow(),
+                detail=json.dumps({"response": reply, "applied": applied, "reason": reason,
+                                   "cancelled_alert": decision.cancel, "raised_alert": decision.alert,
+                                   "late_ok": decision.late_ok and applied,
+                                   "capture_end": capture_end.isoformat() if capture_end else None}),
             ))
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                return {"incident_id": incident_id, "applied": False, "incident_state": row.spatial_state, "reason": "already_recorded"}
-            state = row.spatial_state
+            db.flush()
+            if decision.late_ok and applied:
+                follow["deliver"] = follow.get("deliver", []) + self._late_ok_locked(db, session_id, row)
+            db.commit()
+            result = {**result, "applied": applied, "incident_state": row.spatial_state, "reason": reason}
         _hint(session_id, "action")
-        return {"incident_id": incident_id, "applied": True, "incident_state": state, "reason": None}
+        return result, follow
 
 
 def _fixes_library() -> list[dict]:
@@ -895,6 +1066,35 @@ def _read_journal(path: Path) -> np.ndarray:
     if not path.exists():
         return np.zeros((0, len(JOURNAL_COLUMNS)))
     return np.loadtxt(path, delimiter=",", skiprows=1, ndmin=2)
+
+
+ESCALATION_REASONS = {"no_ack": "No acknowledgement within the response window",
+                      "first_contact_failed": "The first contact could not be notified"}
+VN_TZ = timezone(timedelta(hours=7))
+
+
+def _incident_session_ok(session) -> bool:
+    """An opened incident keeps running after Stop; only a broken run (Interrupted) ends it."""
+    return session is not None and session.status in ("Running", "Stopped")
+
+
+def _action(db, key: str):
+    return db.query(SpatialAction).filter(SpatialAction.action_key == key).first()
+
+
+def _late_ok_reported(db, incident_id: int) -> bool:
+    return any(json.loads(a.detail).get("late_ok") for a in db.query(SpatialAction).filter(
+        SpatialAction.incident_id == incident_id, SpatialAction.kind == "self_report"))
+
+
+def _response_status(db, row) -> str:
+    if _late_ok_reported(db, row.id):
+        return "OK reported after alert"
+    return "Help requested" if row.alert_reason == "wearer_help" else "No clear response"
+
+
+def _local_time(utc_naive: datetime) -> str:
+    return utc_naive.replace(tzinfo=timezone.utc).astimezone(VN_TZ).strftime("%Y-%m-%d %H:%M:%S %z")
 
 
 def _read_frame(path) -> bytes:

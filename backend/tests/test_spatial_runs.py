@@ -367,12 +367,14 @@ class SpatialRunsTest(unittest.TestCase):
         self.assertEqual((first["applied"], second["applied"], second["reason"]), (True, False, "already_recorded"))
         self.assertEqual(incident_actions(snap).count(("ack", "caregiver_demo")), 1)
 
-    def test_stop_during_the_caregiver_window_means_no_escalation_later(self):
+    def test_an_alerted_incident_still_escalates_after_stop(self):
+        # MVP2.md: Stop ends input, not an opened incident.
         async def stop_and_wait(m, sid, incident_id):
             await m.stop(sid)
             await asyncio.sleep(0.8)
         snap, _ = self.run_until_alerted(stop_and_wait, caregiver_ack_seconds=0.4)
-        self.assertEqual(incident_actions(snap), [("notify", "contact_1")])
+        self.assertEqual(snap["status"], "Stopped")
+        self.assertEqual(incident_actions(snap), [("notify", "contact_1"), ("escalate", "contact_2")])
 
     def test_im_ok_inside_the_countdown_cancels_and_nobody_is_notified(self):
         async def go():
@@ -401,21 +403,29 @@ class SpatialRunsTest(unittest.TestCase):
         result, again, snap = asyncio.run(go())
         self.assertEqual((result["applied"], result["incident_state"]), (True, "alerted"))
         self.assertEqual((again["applied"], again["reason"]), (False, "already_recorded"))
-        self.assertEqual(incident_actions(snap), [("notify", "contact_1"), ("self_report", "wearer")])
+        self.assertEqual(incident_actions(snap), [("notify", "contact_1"), ("self_report", "wearer"),
+                                                  ("late_ok", "contact_1"), ("self_report", "wearer")])
+        late = next(a for a in snap["actions"] if a["kind"] == "late_ok")
+        self.assertTrue(late["detail"]["text"].startswith("Update for fall alert"))
 
-    def test_stop_during_the_countdown_means_no_later_notification(self):
+    def test_stop_during_the_countdown_still_alerts_at_the_deadline_and_blocks_a_new_start(self):
         async def go():
-            m = self.manager(run_timeout_seconds=60, wearer_cancel_seconds=2)
+            m = self.manager(run_timeout_seconds=60, wearer_cancel_seconds=1, caregiver_ack_seconds=0.3)
             sid = await m.start("S2")
             await self.wait_for_incident(sid)
             await m.stop(sid)
             at_stop = session_snapshot(sid, self.db)
-            await asyncio.sleep(2.5)
-            return at_stop, session_snapshot(sid, self.db)
+            with self.assertRaises(RunAlreadyActive):
+                await m.start("S1")
+            await m.wait(sid)
+            later = session_snapshot(sid, self.db)
+            next_sid = await m.start("S1")   # free once the incident has finished
+            await m.stop(next_sid)
+            return at_stop, later
         at_stop, later = asyncio.run(go())
-        self.assertEqual(later, at_stop)
-        self.assertEqual(later["incidents"][0]["state"], "awaiting_wearer")
-        self.assertEqual(incident_actions(later), [])
+        self.assertEqual(at_stop["incidents"][0]["state"], "awaiting_wearer")
+        self.assertEqual(later["incidents"][0]["state"], "alerted")
+        self.assertEqual(incident_actions(later), [("notify", "contact_1"), ("escalate", "contact_2")])
 
     def test_run_timeout_stops_the_run(self):
         async def go():
