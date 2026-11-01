@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from app.config import SAMPLING_RATE, WINDOW_SIZE
+from app.config import WINDOW_SIZE
 
 MAX_SAMPLE_GAP_MS = 40
 WARMUP_NOMINAL_MS = 2000
@@ -86,6 +86,13 @@ class LiveStream:
                         raise BatchRejected("arrived_after_newer_samples")
                     continue
                 fresh.append(s)
+            # millis() never runs backwards within one boot. Checked on its own, so a sequence gap
+            # cannot hide it; such samples would give negative source time.
+            previous = self._last_device_ms
+            for s in fresh:
+                if previous is not None and s.device_ms < previous:
+                    raise BatchRejected("device_clock_went_back")
+                previous = s.device_ms
         except BatchRejected:
             self.rejected_batches += 1
             raise
@@ -99,13 +106,8 @@ class LiveStream:
             self._origin_ms = s.device_ms
         elif s.seq != self._last_seq + 1:
             reset = "sequence_gap"
-        elif s.device_ms < self._last_device_ms:
-            reset = "clock_back"
         elif s.device_ms - self._last_device_ms > MAX_SAMPLE_GAP_MS:
             reset = "time_gap"
-        if reset == "clock_back":
-            # Source time must not run backwards; restart it after the last sample.
-            self._origin_ms = s.device_ms - (self._last_source_ms + 1000 // SAMPLING_RATE)
         source_ms = s.device_ms - self._origin_ms
 
         if reset is not None:

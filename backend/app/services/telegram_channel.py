@@ -21,7 +21,7 @@ from app.services.notify_templates import render
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.telegram.org"
-ACK_DATA = re.compile(r"^ack:(\d+)$")
+ACK_DATA = re.compile(r"^ack:(\d+):(\d+)$")  # ack:<incident>:<send action>
 POLL_SECONDS = 25
 
 
@@ -45,13 +45,13 @@ class TelegramNotifier:
         with httpx.Client(transport=self._transport, timeout=timeout or self._timeout) as client:
             return client.post(f"{self._base}/{method}", json=payload).json()
 
-    def send(self, contact: str, text: str, incident_id: int, ack_button: bool) -> dict:
+    def send(self, contact: str, text: str, incident_id: int, ack_data: str | None) -> dict:
         chat_id = self._chat_ids.get(contact)
         if chat_id is None:
             return {"status": "failed", "error": f"{contact} has no chat id"}
         payload = {"chat_id": chat_id, "text": text}
-        if ack_button:
-            payload["reply_markup"] = {"inline_keyboard": [[{"text": "Acknowledge", "callback_data": f"ack:{incident_id}"}]]}
+        if ack_data:
+            payload["reply_markup"] = {"inline_keyboard": [[{"text": "Acknowledge", "callback_data": ack_data}]]}
         try:
             body = self._call("sendMessage", payload)
         except httpx.TimeoutException:
@@ -97,7 +97,7 @@ async def handle_callback(notifier: TelegramNotifier, manager, update: dict) -> 
     match = ACK_DATA.match(query.get("data") or "")
     result = None
     if sender_ok and match:
-        result = await manager.telegram_ack(int(match.group(1)), contact, message.get("message_id"))
+        result = await manager.telegram_ack(int(match.group(1)), int(match.group(2)), contact, message.get("message_id"))
     if result and (result["applied"] or result["reason"] == "already_recorded"):
         incident_id = int(match.group(1))
         await asyncio.to_thread(notifier.answer_callback, query["id"], render("ack_received", incident_id=incident_id))
@@ -107,22 +107,31 @@ async def handle_callback(notifier: TelegramNotifier, manager, update: dict) -> 
     return {"contact": contact, "sender_ok": sender_ok, "result": result}
 
 
-async def poll_forever(notifier: TelegramNotifier, manager) -> None:
-    """getUpdates long polling; the offset only moves past updates that were handled."""
-    offset = None
+async def poll_forever(notifier: TelegramNotifier, manager, retry_seconds: float = 5.0, max_attempts: int = 3) -> None:
+    """getUpdates long polling. The offset moves past an update only once it was handled, or was
+    not a button tap, or failed max_attempts times (logged, so one bad update cannot block every
+    later tap). A transient failure is retried from the same offset."""
+    offset, attempts = None, {}
     while True:
         try:
             updates = await asyncio.to_thread(notifier.get_updates, offset)
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            logger.warning("Telegram polling failed (%s); retrying in 5 s", type(err).__name__)
-            await asyncio.sleep(5)
+            logger.warning("Telegram polling failed (%s); retrying in %s s", type(err).__name__, retry_seconds)
+            await asyncio.sleep(retry_seconds)
             continue
         for update in updates:
+            update_id = update["update_id"]
             if "callback_query" in update:
                 try:
                     await handle_callback(notifier, manager, update)
                 except Exception:
-                    logger.exception("Telegram callback %s failed", update.get("update_id"))
-            offset = update["update_id"] + 1
+                    attempts[update_id] = attempts.get(update_id, 0) + 1
+                    if attempts[update_id] < max_attempts:
+                        logger.warning("Telegram callback %s failed (attempt %s); retrying", update_id, attempts[update_id])
+                        await asyncio.sleep(retry_seconds)
+                        break  # refetch from this update; later ones wait behind it
+                    logger.exception("Telegram callback %s failed %s times; skipping it", update_id, max_attempts)
+            attempts.pop(update_id, None)
+            offset = update_id + 1

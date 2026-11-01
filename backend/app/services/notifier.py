@@ -16,5 +16,5 @@ class SimulatedNotifier:
     def configured_contacts(self) -> set[str]:
         return {"contact_1", "contact_2"}
 
-    def send(self, contact: str, text: str, incident_id: int, ack_button: bool) -> dict:
+    def send(self, contact: str, text: str, incident_id: int, ack_data: str | None) -> dict:
         return {"status": "simulated"}

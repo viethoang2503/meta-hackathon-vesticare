@@ -60,6 +60,26 @@ class WearerChannel:
     last_drop: datetime | None = None
     drops: int = 0
     turns: int = 0
+    # When listening first opened per incident, and when the phone itself was talking (speech plus
+    # guard). A turn counts only inside a grant and outside every quiet span.
+    grants: dict[int, datetime] = field(default_factory=dict)
+    quiet: list[tuple[datetime, datetime]] = field(default_factory=list)
+
+    def grant(self, incident_id: int, mode: str, until: datetime, now: datetime) -> None:
+        self.listen = Listen(incident_id, mode, until)
+        self.grants.setdefault(incident_id, now)
+
+    def check_turn(self, incident_id: int, start: datetime, end: datetime, slack: timedelta) -> str | None:
+        """None when the turn fits a listening grant for this incident and misses the phone's own
+        speech, otherwise why it cannot be trusted."""
+        opened = self.grants.get(incident_id)
+        if opened is None:
+            return "no listening was granted for this incident"
+        if start < opened - slack:
+            return "captured before listening opened"
+        if any(start < q_end + slack and end > q_start - slack for q_start, q_end in self.quiet):
+            return "overlaps the phone's own speech or guard"
+        return None
 
     def say(self, template_id: str, incident_id: int | None, now: datetime, source: str = "code") -> Utterance:
         if template_id in REMINDERS:
@@ -87,11 +107,15 @@ class WearerChannel:
             out.append(u)
         return out
 
-    def played(self, utterance_id: int) -> bool:
+    def played(self, utterance_id: int, speech_span: tuple[datetime, datetime] | None, now: datetime) -> bool:
+        """Marks a line played and keeps its speech plus guard as a quiet span. Without a mapped
+        span the whole time from queueing to this report is quiet, which can only exclude more."""
         u = next((u for u in self.utterances if u.id == utterance_id), None)
         if u is None or u.status != "queued":
             return False
         u.status = "played"
+        start, end = speech_span or (u.created_at, now)
+        self.quiet.append((start, end + timedelta(milliseconds=GUARD_MS)))
         return True
 
     def listening_for(self, now: datetime) -> Listen | None:

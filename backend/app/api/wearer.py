@@ -21,6 +21,8 @@ MAX_AUDIO_BYTES = 2 * 1024 * 1024
 
 class Played(BaseModel):
     utterance_id: int = Field(ge=1)
+    speech_start: float | None = None  # phone performance.now() ms
+    speech_end: float | None = None
 
 
 class Status(BaseModel):
@@ -51,7 +53,8 @@ def poll(session_id: str, after: int = 0, x_wearer_token: str | None = Header(de
 
 @router.post("/played")
 def played(session_id: str, body: Played, x_wearer_token: str | None = Header(default=None)):
-    return {"recorded": _ok(spatial_runs.wearer_played(session_id, x_wearer_token, body.utterance_id))}
+    return {"recorded": _ok(spatial_runs.wearer_played(session_id, x_wearer_token, body.utterance_id,
+                                                       body.speech_start, body.speech_end))}
 
 
 @router.post("/status")

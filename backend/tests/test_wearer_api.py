@@ -88,6 +88,43 @@ class WearerApiTest(unittest.TestCase):
             time.sleep(0.05)
         raise AssertionError(f"never reached {state}: {self.snapshot(client, sid)['incidents'][0]['state']}")
 
+    def sync_phone_clock(self, client, sid, auth):
+        rounds = []
+        for _ in range(5):
+            t0 = phone_now()
+            rounds.append({"t0": t0, **client.post(f"/api/wearer/{sid}/clock", headers=auth).json(), "t3": phone_now()})
+        client.post(f"/api/wearer/{sid}/clock/report", headers=auth, json={"rounds": rounds})
+
+    def test_an_ok_from_outside_this_incidents_listening_cannot_cancel(self):
+        """Review finding 1: audio stamped an hour before the incident used to cancel it."""
+        with TestClient(app) as client:
+            sid, iid = self.open_incident(client)
+            try:
+                token = self.snapshot(client, sid)["wearer"]["token"]
+                auth = {"X-Wearer-Token": token}
+                self.sync_phone_clock(client, sid, auth)
+                question = client.get(f"/api/wearer/{sid}/poll", headers=auth).json()["utterances"][0]
+                spoke_from = phone_now()
+                time.sleep(0.6)
+                client.post(f"/api/wearer/{sid}/played", headers=auth,
+                            json={"utterance_id": question["id"], "speech_start": spoke_from, "speech_end": phone_now()})
+                self.heard += ["I'm fine.", "I'm fine."]
+                old = phone_now() - 3_600_000
+                r = client.post(f"/api/wearer/{sid}/audio?incident_id={iid}&capture_start={old - 1000}&capture_end={old}",
+                                content=wav(1.0), headers={**auth, "Content-Type": "audio/wav"}).json()
+                self.assertEqual(r["capture_time"], "captured before listening opened")
+                over = client.post(f"/api/wearer/{sid}/audio?incident_id={iid}&capture_start={spoke_from + 100}&capture_end={spoke_from + 500}",
+                                   content=wav(0.4), headers={**auth, "Content-Type": "audio/wav"}).json()
+                self.assertEqual(over["capture_time"], "overlaps the phone's own speech or guard")
+                self.wait_state(client, sid, "alerted", seconds=6)   # neither OK cancelled; the deadline alerted
+                reports = [a["detail"] for a in self.snapshot(client, sid)["actions"] if a["kind"] == "self_report"]
+                self.assertEqual([(r["response"], r["speech"]["not_counted_as_ok"]) for r in reports[:2]],
+                                 [("unclear", "captured before listening opened"),
+                                  ("unclear", "overlaps the phone's own speech or guard")])
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+                client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
+
     def send_turn(self, client, sid, token, iid, seconds=1.0):
         end = phone_now()
         return client.post(f"/api/wearer/{sid}/audio?incident_id={iid}&capture_start={end - seconds * 1000}&capture_end={end}",
@@ -110,6 +147,7 @@ class WearerApiTest(unittest.TestCase):
                     t0 = phone_now()
                     rounds.append({"t0": t0, **client.post(f"/api/wearer/{sid}/clock", headers=auth).json(), "t3": phone_now()})
                 self.assertIn("offset_ms", client.post(f"/api/wearer/{sid}/clock/report", headers=auth, json={"rounds": rounds}).json())
+                time.sleep(1.6)  # the phone records only after the question and its 500 ms guard
 
                 self.heard.append("I'm fine. I'm fine.")
                 self.assertEqual(self.send_turn(client, sid, token, iid).json()["capture_time"], "confirmed")
@@ -133,7 +171,7 @@ class WearerApiTest(unittest.TestCase):
                 client.post(f"/api/spatial/sessions/{sid}/stop")
                 client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
 
-    def test_without_a_phone_clock_a_late_help_cannot_undo_a_cancel(self):
+    def test_without_a_phone_clock_ok_does_not_cancel_but_help_still_alerts(self):
         with TestClient(app) as client:
             sid, iid = self.open_incident(client)
             try:
@@ -141,16 +179,17 @@ class WearerApiTest(unittest.TestCase):
                 self.heard += ["I'm OK.", "Help!"]
                 reply = self.send_turn(client, sid, token, iid).json()
                 self.assertEqual(reply["capture_time"], "phone clock unsynchronized")
-                self.wait_state(client, sid, "cancelled_by_wearer")   # OK decided before D: capture time not needed
-                time.sleep(4.2)                                        # past D, inside the grace
-                self.send_turn(client, sid, token, iid)
                 time.sleep(0.5)
+                self.assertEqual(self.snapshot(client, sid)["incidents"][0]["state"], "awaiting_wearer")
+                self.send_turn(client, sid, token, iid)               # HELP can only strengthen
+                self.wait_state(client, sid, "alerted")
                 snap = self.snapshot(client, sid)
-                self.assertEqual(snap["incidents"][0]["state"], "cancelled_by_wearer")
-                last = [a["detail"] for a in snap["actions"] if a["kind"] == "self_report"][-1]
-                self.assertEqual((last["response"], last["reason"]), ("help", "capture_time_unknown"))
+                self.assertEqual(snap["incidents"][0]["state"], "alerted")
+                first = [a["detail"] for a in snap["actions"] if a["kind"] == "self_report"][0]
+                self.assertEqual(first["speech"]["not_counted_as_ok"], "phone clock unsynchronized")
             finally:
                 client.post(f"/api/spatial/sessions/{sid}/stop")
+                client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
 
     def test_through_the_tunnel_only_the_phone_routes_answer(self):
         tunnel = {"Cf-Connecting-Ip": "203.0.113.9"}

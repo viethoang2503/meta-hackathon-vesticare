@@ -28,11 +28,11 @@ class RecordingNotifier:
     def configured_contacts(self):
         return {"contact_1", "contact_2"}
 
-    def send(self, contact, text, incident_id, ack_button):
+    def send(self, contact, text, incident_id, ack_data):
         import time
         time.sleep(self.delay)
         with self.lock:
-            self.sent.append((contact, text, ack_button))
+            self.sent.append((contact, text, ack_data))
         return {"status": self.outcomes.get(contact, "sent")}
 
 
@@ -78,8 +78,9 @@ class LifecycleTest(unittest.TestCase):
         snap, result, n = self.run_s2(say_help, wearer_cancel_seconds=5, caregiver_ack_seconds=5)
         self.assertEqual((result["applied"], result["incident_state"]), (True, "alerted"))
         self.assertEqual(actions(snap), [("notify", "contact_1"), ("ack", "telegram:contact_1")])
-        contact, text, ack_button = n.sent[0]
-        self.assertEqual((contact, ack_button), ("contact_1", True))
+        contact, text, ack_data = n.sent[0]
+        self.assertEqual(contact, "contact_1")
+        self.assertRegex(ack_data, rf"^ack:{result['incident_id']}:\d+$")
         self.assertIn("Wearer response: Help requested.", text)
         self.assertIn("Location: Unknown.", text)
 

@@ -28,16 +28,28 @@ STATS = {"dropped_at_source": 0, "duplicates": 0, "rejected_batches": 0, "covera
          "unavailable_ms": 600, "first_warmup_ms": 1980, "reset_count": 0, "resets": []}
 
 
-def test_a_clean_recording_passes_every_row_but_simulated_data_is_never_evidence():
-    table = journal()
-    real = g4_report.analyse(table, STATS, [], {"rest": (5, 35)}, "esp32", TRAIN_MEAN)
-    assert real["status"] == "Pass"
+FULL = {"rest": (5, 35), "falls": [(100, 110), (150, 160), (200, 210)],
+        "adl": [(220 + 5 * i, 223 + 5 * i) for i in range(10)]}
+
+
+def test_a_complete_clean_recording_passes_but_simulated_data_is_never_evidence():
+    table = journal(n=16_000)   # 320 s
+    real = g4_report.analyse(table, STATS, [], FULL, "esp32", TRAIN_MEAN)
+    assert (real["status"], real["missing"]) == ("Pass", [])
     r = real["rows"]
     assert (r["rest"]["mean_svm_g"], r["rest"]["gravity_axis"], r["rest"]["note"]) == (1.0, "-y", None)
     assert (r["acquisition"]["rate_hz"], r["acquisition"]["p95_interval_ms"]) == (50.0, 20.0)
     assert (r["transport"]["lost"], r["range"]["clipped_samples"]) == (0, 0)
-    fake = g4_report.analyse(table, STATS, [], {"rest": (5, 35)}, "fake_esp32", TRAIN_MEAN)
+    fake = g4_report.analyse(table, STATS, [], FULL, "fake_esp32", TRAIN_MEAN)
     assert fake["status"] == "Simulated: not G4 evidence"
+
+
+def test_clean_rows_without_the_minimum_trials_are_incomplete_not_pass():
+    """Review finding 5: 31 s of rest, no falls and no everyday trials used to report Pass."""
+    report = g4_report.analyse(journal(n=1550), STATS, [], {"rest": (0, 31)}, "esp32", TRAIN_MEAN)
+    assert report["rows_pass"] is True
+    assert report["status"] == "Incomplete"
+    assert len(report["missing"]) == 3 and "controlled falls" in report["missing"][1]
 
 
 def test_gravity_on_another_axis_is_flagged_against_the_training_data():

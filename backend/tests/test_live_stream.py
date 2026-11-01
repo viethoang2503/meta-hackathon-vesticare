@@ -51,7 +51,6 @@ def test_another_boot_is_rejected():
 @pytest.mark.parametrize("second, reason", [
     (samples(150, 10, 3000), "sequence_gap"),          # seq jumps, device time continuous
     (samples(100, 10, 2041), "time_gap"),              # seq continuous, 41 ms between samples
-    (samples(100, 10, 1000), "clock_back"),            # device clock runs backwards
 ])
 def test_a_gap_resets_the_window_and_counts_against_coverage(second, reason):
     s = LiveStream("boot-a")
@@ -62,6 +61,22 @@ def test_a_gap_resets_the_window_and_counts_against_coverage(second, reason):
     assert s.readiness == "detection_unavailable"
     assert steps[0].source_ms > 1980
     assert s.resets[0]["reason"] == reason
+
+
+@pytest.mark.parametrize("second", [
+    samples(100, 10, 1000),     # seq continuous, device clock back
+    samples(150, 10, 0),        # seq gap and clock back together
+])
+def test_a_device_clock_running_backwards_is_rejected_and_never_reaches_the_detector(second):
+    """Review finding 6: a sequence gap used to hide the clock check and produce source time -4000 ms."""
+    s = LiveStream("boot-a")
+    s.accept("boot-a", samples(0, 100, 0))
+    with pytest.raises(BatchRejected) as err:
+        s.accept("boot-a", second)
+    assert err.value.reason == "device_clock_went_back"
+    assert (s.samples_accepted, s.stats()["last_source_ms"]) == (100, 1980)
+    later = s.accept("boot-a", samples(200, 5, 5000))
+    assert min(st.source_ms for st in later) > 1980
 
 
 def test_40_ms_between_samples_is_still_continuous():

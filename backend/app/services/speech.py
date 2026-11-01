@@ -28,6 +28,9 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 MAX_WAITING = 2
+# A turn takes about 1 s (U0). Past this the turn is failed and the worker moves on: a stuck
+# inference must not silence every later turn. The stuck thread cannot be killed; it is counted.
+JOB_TIMEOUT_SECONDS = 20
 WHISPER_SETTINGS = {"language": "en", "beam_size": 1, "vad_filter": True, "condition_on_previous_text": False}
 
 _model = None
@@ -79,9 +82,12 @@ class SpeechJob:
 
 
 class SpeechWorker:
-    def __init__(self, transcribe_fn: Callable[[np.ndarray], str] = transcribe, max_waiting: int = MAX_WAITING):
+    def __init__(self, transcribe_fn: Callable[[np.ndarray], str] = transcribe, max_waiting: int = MAX_WAITING,
+                 job_timeout: float = JOB_TIMEOUT_SECONDS):
         self._transcribe = transcribe_fn
         self._max_waiting = max_waiting
+        self._job_timeout = job_timeout
+        self.stuck = 0
         self._waiting: deque[SpeechJob] = deque()
         self._wake: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
@@ -115,7 +121,11 @@ class SpeechWorker:
             job = self._waiting.popleft()
             started = time.monotonic()
             try:
-                result = await asyncio.to_thread(self._process, job)
+                result = await asyncio.wait_for(asyncio.to_thread(self._process, job), self._job_timeout)
+            except asyncio.TimeoutError:
+                self.stuck += 1
+                logger.error("speech job exceeded %s s; abandoned (%s stuck so far)", self._job_timeout, self.stuck)
+                result = {"status": "failed", "error": f"transcription took longer than {self._job_timeout} s"}
             except Exception as err:
                 logger.exception("speech job failed")
                 result = {"status": "failed", "error": type(err).__name__}

@@ -55,3 +55,33 @@ def test_undecodable_audio_is_a_failed_turn_not_silence():
         return out[0]
     result = asyncio.run(go())
     assert result["status"] == "failed" and "transcript" not in result
+
+
+def test_a_stuck_turn_is_failed_after_the_timeout_and_the_next_turn_still_runs():
+    """Review finding 8: one inference that never returns must not block later turns."""
+    import threading
+    release = threading.Event()
+
+    def transcribe(pcm):
+        if not release.is_set() and transcribe.calls == 0:
+            transcribe.calls += 1
+            release.wait(5)        # the first call hangs
+            return "too late"
+        return "I need help"
+    transcribe.calls = 0
+
+    async def go():
+        worker, results = SpeechWorker(transcribe, job_timeout=0.3), []
+
+        async def on_done(job, result):
+            results.append((job.meta["n"], result["status"], result.get("transcript")))
+        worker.submit(SpeechJob(wav(), {"n": 1}, on_done))
+        await asyncio.sleep(0.01)
+        worker.submit(SpeechJob(wav(), {"n": 2}, on_done))
+        while len(results) < 2:
+            await asyncio.sleep(0.05)
+        release.set()
+        return results, worker.stuck
+    results, stuck = asyncio.run(go())
+    assert results == [(1, "failed", None), (2, "ok", "I need help")]
+    assert stuck == 1

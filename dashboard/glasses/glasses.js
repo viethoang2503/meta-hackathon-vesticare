@@ -2,6 +2,8 @@
 // backend queues, waits a guard so its own voice is not recorded, and records fixed turns while
 // the backend says to listen. It never cuts a turn to speak and never extends a deadline: the
 // backend decides everything; this page only plays, records and reports.
+import { turnLength } from "./turn.js";
+
 const params = new URLSearchParams(location.hash.slice(1));
 const session = params.get("s");
 const token = params.get("t");
@@ -20,6 +22,7 @@ let stream = null;
 let mime = "";
 let lastUtterance = 0;
 let lastClockSync = -Infinity;
+let backendOffset = null;  // backend monotonic ms = phone performance.now() + backendOffset
 
 function show(state, detail = "", cls = "") {
   $("state").textContent = state;
@@ -51,6 +54,7 @@ async function syncClock() {
     rounds.push({ t0, ...reply, t3: performance.now() });
   }
   const mapping = await call("clock/report", { body: { rounds } });
+  backendOffset = mapping.offset_ms;
   lastClockSync = performance.now();
   log(`clock synced, ±${mapping.uncertainty_ms} ms`);
 }
@@ -59,9 +63,11 @@ function speak(text) {
   return new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "en-US";
-    const timer = setTimeout(() => resolve(false), TTS_TIMEOUT_MS);
-    u.onend = () => { clearTimeout(timer); resolve(true); };
-    u.onerror = () => { clearTimeout(timer); resolve(false); };
+    let start = null;
+    const timer = setTimeout(() => resolve(null), TTS_TIMEOUT_MS);
+    u.onstart = () => { start = performance.now(); };
+    u.onend = () => { clearTimeout(timer); resolve({ start: start ?? performance.now(), end: performance.now() }); };
+    u.onerror = () => { clearTimeout(timer); resolve(null); };
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
   });
@@ -72,23 +78,25 @@ async function recordTurn(ms) {
   const parts = [];
   recorder.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
   const stopped = new Promise((r) => { recorder.onstop = r; });
+  const started = new Promise((r) => { recorder.onstart = () => r(performance.now()); });
   recorder.start();
-  const start = performance.now();
-  await sleep(ms);
+  const start = await started;  // capture begins here, not when start() was called
+  await sleep(Math.max(0, ms - (performance.now() - start)));
+  const end = performance.now();  // capture ends at stop(); finalizing the file comes after
   recorder.stop();
   await stopped;  // finalized file, never a timeslice fragment
-  return { blob: new Blob(parts, { type: recorder.mimeType || mime }), start, end: performance.now() };
+  return { blob: new Blob(parts, { type: recorder.mimeType || mime }), start, end };
 }
 
 async function play(u) {
   show("Speaking", u.text);
-  const ok = await speak(u.text);
-  if (!ok) {
+  const spoken = await speak(u.text);
+  if (!spoken) {
     log(`could not speak "${u.text}"`);  // not reported as played
     return;
   }
   await sleep(GUARD_MS);
-  await call("played", { body: { utterance_id: u.id } });
+  await call("played", { body: { utterance_id: u.id, speech_start: spoken.start, speech_end: spoken.end } });
   log(`said "${u.text}"`);
 }
 
@@ -104,9 +112,10 @@ async function loop() {
         continue;
       }
       const listen = state.listen;
-      if (listen && listen.remaining_ms >= MIN_TURN_MS) {
-        show(listen.mode === "help_only" ? "Listening for help" : "Listening", `${Math.ceil(listen.remaining_ms / 1000)} s left`);
-        const turn = await recordTurn(Math.min(listen.turn_ms, listen.remaining_ms));
+      const length = turnLength(listen, backendOffset, performance.now(), MIN_TURN_MS);
+      if (length > 0) {
+        show(listen.mode === "help_only" ? "Listening for help" : "Listening", `${Math.ceil(length / 1000)} s turn`);
+        const turn = await recordTurn(length);
         const reply = await call("audio", {
           body: turn.blob, type: turn.blob.type || "application/octet-stream",
           query: `?incident_id=${listen.incident_id}&capture_start=${turn.start}&capture_end=${turn.end}`,

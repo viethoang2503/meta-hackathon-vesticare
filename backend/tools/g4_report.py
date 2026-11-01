@@ -28,6 +28,8 @@ ACC_FULL_SCALE_G = 16.0
 GYRO_FULL_SCALE_DPS = 2000.0
 CLIP_FRACTION = 0.995  # a reading this close to full scale is treated as clipped
 AXES = ("ax", "ay", "az")
+# Minimum evidence before G4 can pass (MVP2.md, "G4 và bảng thử nghiệm").
+MIN_REST_S, MIN_RECORDING_S, MIN_FALLS, MIN_ADL = 30, 300, 3, 10
 COL = {name: i for i, name in enumerate(JOURNAL_COLUMNS)}
 
 
@@ -114,20 +116,31 @@ def analyse(table: np.ndarray, stats: dict, incidents: list[dict], segments: dic
         "adl_with_false_alarm": sum(1 for a in adl if a["false_alarms"]), "adl": len(adl), "adl_trials": adl,
     }
 
-    simulated = source != "esp32"
+    rest_s = (segments["rest"][1] - segments["rest"][0]) if segments.get("rest") else 0
+    recording_s = (table[-1, COL["source_ms"]] - table[0, COL["source_ms"]]) / 1000
+    missing = [text for short, text in (
+        (rest_s < MIN_REST_S, f"a rest segment of at least {MIN_REST_S} s (have {rest_s:g} s)"),
+        (recording_s < MIN_RECORDING_S, f"at least {MIN_RECORDING_S} s of recording (have {recording_s:.0f} s)"),
+        (len(falls) < MIN_FALLS, f"at least {MIN_FALLS} controlled falls (have {len(falls)})"),
+        (len(adl) < MIN_ADL, f"at least {MIN_ADL} everyday trials (have {len(adl)})"),
+    ) if short]
     gate_rows = ("rest", "acquisition", "transport", "coverage", "range")
-    return {
-        "source": source,
-        "status": "Simulated: not G4 evidence" if simulated else
-                  ("Pass" if all(rows[k]["pass"] for k in gate_rows if k in rows) and "rest" in rows else "Fail"),
-        "rows": rows,
-    }
+    rows_pass = all(rows[k]["pass"] for k in gate_rows if k in rows)
+    if source != "esp32":
+        status = "Simulated: not G4 evidence"
+    elif missing:
+        status = "Incomplete"  # per-row results above still hold; the gate is not decided
+    else:
+        status = "Pass" if rows_pass else "Fail"
+    return {"source": source, "status": status, "missing": missing, "rows_pass": rows_pass, "rows": rows}
 
 
 def to_markdown(session_id: str, report: dict) -> str:
     r = report["rows"]
-    lines = [f"# G4 for session {session_id}", "", f"Source: {report['source']}. Status: **{report['status']}**.", "",
-             "| Check | Measured | Target | Pass |", "|---|---|---|---|"]
+    lines = [f"# G4 for session {session_id}", "", f"Source: {report['source']}. Status: **{report['status']}**.", ""]
+    if report["missing"]:
+        lines += ["Still needed before the gate can be decided:", *[f"- {m}" for m in report["missing"]], ""]
+    lines += ["| Check | Measured | Target | Pass |", "|---|---|---|---|"]
     if "rest" in r:
         lines.append(f"| Rest at the waist | mean SVM {r['rest']['mean_svm_g']} g, gravity on {r['rest']['gravity_axis']} "
                      f"(training data {r['rest']['training_gravity_axis']}) | 1 ± 0.05 g | {r['rest']['pass']} |")

@@ -46,19 +46,19 @@ def notifier(fake, chats=CHATS):
 def test_send_puts_the_acknowledge_button_on_alerts_only():
     fake = FakeTelegram()
     n = notifier(fake)
-    assert n.send("contact_1", "Fall alert #4 ...", 4, True) == {"status": "sent", "message_id": 501, "chat_id": "1001"}
-    n.send("contact_1", "Update for fall alert #4 ...", 4, False)
+    assert n.send("contact_1", "Fall alert #4 ...", 4, "ack:4:9") == {"status": "sent", "message_id": 501, "chat_id": "1001"}
+    n.send("contact_1", "Update for fall alert #4 ...", 4, None)
     first, update = fake.sent()
-    assert first["reply_markup"]["inline_keyboard"][0][0] == {"text": "Acknowledge", "callback_data": "ack:4"}
+    assert first["reply_markup"]["inline_keyboard"][0][0] == {"text": "Acknowledge", "callback_data": "ack:4:9"}
     assert "reply_markup" not in update
 
 
 def test_a_refused_send_is_failed_and_a_slow_one_is_unknown_and_neither_leaks_the_token():
-    failed = notifier(FakeTelegram(fail_send="Bad Request: chat not found")).send("contact_1", "x", 1, True)
-    slow = notifier(FakeTelegram(timeout_send=True)).send("contact_1", "x", 1, True)
+    failed = notifier(FakeTelegram(fail_send="Bad Request: chat not found")).send("contact_1", "x", 1, "ack:1:1")
+    slow = notifier(FakeTelegram(timeout_send=True)).send("contact_1", "x", 1, "ack:1:1")
     assert (failed["status"], slow["status"]) == ("failed", "unknown")
     assert TOKEN not in json.dumps([failed, slow])
-    assert notifier(FakeTelegram(), {"contact_1": "1001"}).send("contact_2", "x", 1, True)["status"] == "failed"
+    assert notifier(FakeTelegram(), {"contact_1": "1001"}).send("contact_2", "x", 1, "ack:1:1")["status"] == "failed"
 
 
 class CallbackTest(unittest.TestCase):
@@ -83,8 +83,10 @@ class CallbackTest(unittest.TestCase):
             while not session_snapshot(sid, self.db)["incidents"] or not fake.sent():
                 await asyncio.sleep(0.02)
             await asyncio.sleep(0.1)
-            iid = session_snapshot(sid, self.db)["incidents"][0]["id"]
-            results = [await handle_callback(tg, m, tap(iid, 501)) for tap in taps]
+            snap = session_snapshot(sid, self.db)
+            iid = snap["incidents"][0]["id"]
+            action_id = next(a["id"] for a in snap["actions"] if a["kind"] == "notify")
+            results = [await handle_callback(tg, m, tap(iid, action_id, 501)) for tap in taps]
             await m.stop(sid)
             await m.acknowledge(iid, "test_cleanup")
             await m.wait(sid)
@@ -93,8 +95,8 @@ class CallbackTest(unittest.TestCase):
 
     @staticmethod
     def tap(chat, sender, message_id_shift=0, data=None):
-        return lambda iid, mid: {"update_id": 1, "callback_query": {
-            "id": "cb1", "from": {"id": int(sender)}, "data": data or f"ack:{iid}",
+        return lambda iid, action_id, mid: {"update_id": 1, "callback_query": {
+            "id": "cb1", "from": {"id": int(sender)}, "data": data or f"ack:{iid}:{action_id}",
             "message": {"message_id": mid + message_id_shift, "chat": {"id": int(chat)}}}}
 
     def test_contact_1_tapping_the_alert_acknowledges_and_the_button_goes(self):
@@ -128,3 +130,80 @@ def test_a_live_session_that_sends_for_real_needs_both_contacts():
         except LiveNotReady as err:
             return str(err)
     assert asyncio.run(go()) == "contact setup"
+
+
+class AckAfterTheFactTest(unittest.TestCase):
+    setUp, tearDown, tap = CallbackTest.setUp, CallbackTest.tearDown, staticmethod(CallbackTest.tap)
+    """Review findings 2 and 3 (2026-11-01)."""
+
+    def run_to_escalation(self, fake, stop_first):
+        tg = notifier(fake)
+
+        async def go():
+            m = SpatialRunManager(session_factory=self.db, notifier=tg, realtime=False, run_timeout_seconds=60,
+                                  wearer_cancel_seconds=0.3, caregiver_ack_seconds=0.3, late_help_grace_seconds=0.2)
+            sid = await m.start("S2")
+            while not session_snapshot(sid, self.db)["incidents"]:
+                await asyncio.sleep(0.02)
+            if stop_first:
+                await m.stop(sid)
+            await m.wait(sid)                       # escalation sent, every task done, registry released
+            snap = session_snapshot(sid, self.db)
+            iid = snap["incidents"][0]["id"]
+            escalation = next(a for a in snap["actions"] if a["kind"] == "escalate")
+            # A lost reply leaves no message id; then any message carrying this button's data counts.
+            tap = self.tap("1002", "1002")(iid, escalation["id"], escalation["detail"].get("message_id", 777))
+            result = await handle_callback(tg, m, tap)
+            return result, session_snapshot(sid, self.db), sid in m._locks
+        return asyncio.run(go())
+
+    def test_a_tap_counts_when_the_send_reply_was_lost(self):
+        result, snap, _ = self.run_to_escalation(FakeTelegram(timeout_send=True), stop_first=False)
+        escalation = next(a for a in snap["actions"] if a["kind"] == "escalate")
+        self.assertEqual(escalation["detail"]["status"], "unknown")
+        self.assertEqual((result["result"]["applied"], result["result"]["reason"]), (True, None))
+
+    def test_contact_2_can_acknowledge_after_stop_once_the_run_is_gone(self):
+        result, snap, registry_alive = self.run_to_escalation(FakeTelegram(), stop_first=True)
+        self.assertFalse(registry_alive)
+        self.assertEqual(snap["status"], "Stopped")
+        self.assertEqual((result["result"]["applied"], result["result"]["reason"]), (True, None))
+        self.assertIn("telegram:contact_2", [a["target"] for a in snap["actions"] if a["kind"] == "ack"])
+
+
+def test_a_failed_callback_is_retried_from_the_same_offset_not_skipped():
+    """Review finding 4: an error handling update 7 must not move the offset to 8."""
+    from app.services import telegram_channel
+
+    class Bot:
+        def __init__(self):
+            self.offsets, self.answered = [], []
+
+        def get_updates(self, offset):
+            self.offsets.append(offset)
+            if len(self.offsets) > 4:
+                raise asyncio.CancelledError
+            pending = [u for u in (7, 8) if offset is None or u >= offset]
+            return [{"update_id": u, "callback_query": {"id": str(u)}} for u in pending]
+
+    handled, failures = [], {"7": 1}
+
+    async def flaky_handle(notifier, manager, update):
+        key = update["callback_query"]["id"]
+        if failures.get(key):
+            failures[key] -= 1
+            raise RuntimeError("database busy")
+        handled.append(int(key))
+
+    bot = Bot()
+    original = telegram_channel.handle_callback
+    telegram_channel.handle_callback = flaky_handle
+    try:
+        try:
+            asyncio.run(telegram_channel.poll_forever(bot, None, retry_seconds=0))
+        except asyncio.CancelledError:
+            pass
+    finally:
+        telegram_channel.handle_callback = original
+    assert handled[:2] == [7, 8]
+    assert bot.offsets[:3] == [None, None, 9]
