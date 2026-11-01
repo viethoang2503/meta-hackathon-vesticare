@@ -96,6 +96,9 @@ class LiveRunEnded(Exception):
 
 
 # A live session has no measured position (MVP2.md, Mục tiêu và phạm vi).
+# MVP2.md M6: data is labelled by where it came from, so a recording replayed through the
+# fake device is never shown as this project's ESP32.
+LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated device (recorded scenario)"}
 UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
 JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
 
@@ -289,7 +292,7 @@ class SpatialRunManager:
         if self._dispatches:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
 
-    async def start_live(self, patient_id: int, device_id: str) -> str:
+    async def start_live(self, patient_id: int, device_id: str, source: str = "esp32") -> str:
         """Start a live session for one device. Samples arrive through ingest_live; the boot id is
         pinned by the first batch. One active run at a time, replay or live."""
         with self._db() as db:
@@ -306,6 +309,8 @@ class SpatialRunManager:
                 "device_silent_seconds": LIVE_DEVICE_SILENT_SECONDS,
                 "model_source": self._detector.model_source,
                 "notification_mode": "simulated",
+                "source": source,
+                "source_label": LIVE_SOURCE_LABELS[source],
             }
             db.add(SpatialSession(
                 id=session_id, kind="live", scenario_id=None, patient_id=patient_id, device_id=device_id,
@@ -365,13 +370,14 @@ class SpatialRunManager:
                 steps = run.stream.accept(boot_id, samples, dropped_at_source)
             except BatchRejected as err:
                 steps, rejected = [], err.reason
+            stats_extra = {"last_rejection": rejected} if rejected else {}
             events = []
             for step in steps:
                 if step.reset is not None:
                     run.monitor.reset_window()
                 events.append(run.monitor.add_sample(step.source_ms, step.values))
             _append_journal(run.journal, steps, received_at)
-            stats = run.stream.stats()
+            stats = {**run.stream.stats(), **stats_extra}
             with lock, self._db() as db:
                 session = db.get(SpatialSession, session_id)
                 if session is None or session.status != "Running":
@@ -854,7 +860,11 @@ def _live_json(s) -> dict:
     received_any = s.last_sample_at is not None
     silent = s.status == "Running" and (
         not received_any or (_utcnow() - s.last_sample_at).total_seconds() > LIVE_DEVICE_SILENT_SECONDS)
-    if silent:
+    if stats.get("last_rejection") == "boot_changed":
+        # The device restarted. MVP2_ARCHITECTURE.md: reconnect before accepting again; for now
+        # that means Stop and a new live session.
+        label = "Device restarted: start a new live session"
+    elif silent:
         label = "Device silent" if received_any else "Waiting for device"
     else:
         label = {"warming_up": "Warming up", "detection_unavailable": "Detection unavailable",
@@ -1006,7 +1016,8 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
         if live:
             table = _read_journal(_journal_path(session.id))
             source_ms, samples = table[:, 0].astype(np.int64), table[:, 4:]
-            location, imu_source, segments = UNKNOWN_LOCATION, "ESP32 waist IMU", []
+            source = json.loads(session.config_snapshot or "{}").get("source", "esp32")
+            location, imu_source, segments = UNKNOWN_LOCATION, LIVE_SOURCE_LABELS[source], []
             frame = {"status": "Unavailable", "reason": "No camera frames in a live session yet",
                      "source": "Phone camera at eye height (glasses proxy)"}
         else:

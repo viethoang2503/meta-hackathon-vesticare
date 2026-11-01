@@ -63,7 +63,8 @@ def main() -> int:
     headers = {"Authorization": f"Bearer {os.environ['DEVICE_TOKEN']}"} if os.environ.get("DEVICE_TOKEN") else {}
     with httpx.Client(base_url=args.base, timeout=10) as client:
         if args.start:
-            r = client.post("/api/spatial/live", json={"patient_id": args.patient, "device_id": args.device})
+            r = client.post("/api/spatial/live", json={"patient_id": args.patient, "device_id": args.device,
+                                                       "source": "fake_esp32"})
             r.raise_for_status()
             print(f"live session {r.json()['id']}")
         boot_id = uuid.uuid4().hex[:12]

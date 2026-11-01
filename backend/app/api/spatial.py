@@ -32,6 +32,7 @@ class StartRequest(BaseModel):
 class StartLiveRequest(BaseModel):
     patient_id: int = Field(gt=0)
     device_id: str = Field(min_length=1, max_length=64)
+    source: Literal["esp32", "fake_esp32"] = "esp32"
 
 
 class LocationOut(BaseModel):
@@ -130,7 +131,7 @@ async def start_session(body: StartRequest):
 @router.post("/live", response_model=SessionSnapshot, status_code=201)
 async def start_live(body: StartLiveRequest):
     try:
-        session_id = await spatial_runs.start_live(body.patient_id, body.device_id)
+        session_id = await spatial_runs.start_live(body.patient_id, body.device_id, body.source)
     except RunAlreadyActive as active:
         raise HTTPException(status_code=409, detail=f"Session {active.session_id} is still running; stop it first")
     return _snapshot_or_404(session_id)

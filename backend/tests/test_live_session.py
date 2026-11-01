@@ -23,6 +23,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 import fake_esp32  # noqa: E402
 from app import database  # noqa: E402
 from app.database import Base  # noqa: E402
+from app.api import sensor as sensor_api  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import schemas  # noqa: E402,F401
 from app.services import spatial_runs as runs_module  # noqa: E402
@@ -56,7 +57,7 @@ class LiveSessionTest(unittest.TestCase):
         """Start a live session, send every batch from a worker thread like the HTTP route, Stop."""
         async def go():
             m = SpatialRunManager(session_factory=self.db, live_wearer_cancel_seconds=0.2, caregiver_ack_seconds=0.2)
-            sid = await m.start_live(1, "fake-esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
             replies = []
             for batch in device_batches(scenario_id, **gap):
                 replies.append(await asyncio.to_thread(m.ingest_live, sid, "boot-1", batch))
@@ -95,10 +96,42 @@ class LiveSessionTest(unittest.TestCase):
         self.assertLess(live["coverage"], 1.0)
         self.assertEqual(live["unavailable_ms"], 12980 - 9980)  # last sample 9980, window full again 1980 ms after 11000
 
+    def test_a_slow_batch_with_continuous_samples_does_not_reset(self):
+        async def go():
+            m = SpatialRunManager(session_factory=self.db)
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            for n, batch in enumerate(device_batches("S1")):
+                if n == 12:
+                    await asyncio.sleep(1.5)  # the network stalls; the device clock and seq do not jump
+                await asyncio.to_thread(m.ingest_live, sid, "boot-1", batch)
+                if n == 20:
+                    break
+            snap = session_snapshot(sid, self.db)
+            await m.stop(sid)
+            return snap["live"]
+        live = asyncio.run(go())
+        self.assertEqual((live["reset_count"], live["readiness"], live["status_label"]), (0, "ready", "Detector ready"))
+
+    def test_after_a_gap_the_laptop_says_detection_unavailable_until_the_window_refills(self):
+        async def go():
+            m = SpatialRunManager(session_factory=self.db)
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
+            labels = []
+            for batch in device_batches("S1", gap_at_ms=4000, gap_ms=500):
+                await asyncio.to_thread(m.ingest_live, sid, "boot-1", batch)
+                labels.append(session_snapshot(sid, self.db)["live"]["status_label"])
+                if len(labels) == 80:
+                    break
+            await m.stop(sid)
+            return labels
+        labels = asyncio.run(go())
+        order = [l for i, l in enumerate(labels) if i == 0 or labels[i - 1] != l]
+        self.assertEqual(order, ["Warming up", "Detector ready", "Detection unavailable", "Detector ready"])
+
     def test_resent_batch_is_not_fed_twice_and_another_boot_is_rejected(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db)
-            sid = await m.start_live(1, "fake-esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
             first = next(device_batches("S1"))
             a = await asyncio.to_thread(m.ingest_live, sid, "boot-1", first)
             b = await asyncio.to_thread(m.ingest_live, sid, "boot-1", first)
@@ -109,11 +142,12 @@ class LiveSessionTest(unittest.TestCase):
         self.assertEqual((a["accepted"], b["accepted"], c["accepted"], c["rejected"]), (10, 0, 0, "boot_changed"))
         live = session_snapshot(sid, self.db)["live"]
         self.assertEqual((live["samples_accepted"], live["duplicates"], live["rejected_batches"]), (10, 10, 1))
+        self.assertEqual(live["status_label"], "Device restarted: start a new live session")
 
     def test_one_run_at_a_time_across_replay_and_live(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db, realtime=False, run_timeout_seconds=30)
-            sid = await m.start_live(1, "fake-esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
             with self.assertRaises(RunAlreadyActive):
                 await m.start("S1")
             await m.stop(sid)
@@ -123,7 +157,7 @@ class LiveSessionTest(unittest.TestCase):
         snap, _ = self.stream("S2")
         detail = incident_detail(snap["incidents"][0]["id"], self.db)
         self.assertEqual(detail["kind"], "live")
-        self.assertEqual(detail["imu"]["source"], "ESP32 waist IMU")
+        self.assertEqual(detail["imu"]["source"], "Simulated device (recorded scenario)")
         self.assertEqual(detail["frame"]["status"], "Unavailable")
         times = [row[0] for row in detail["imu"]["samples"]]
         self.assertLessEqual(times[0], S2_FALL_START_MS - 1000)
@@ -132,7 +166,7 @@ class LiveSessionTest(unittest.TestCase):
     def test_snapshot_says_device_silent_before_any_sample(self):
         async def go():
             m = SpatialRunManager(session_factory=self.db)
-            sid = await m.start_live(1, "fake-esp32")
+            sid = await m.start_live(1, "fake-esp32", "fake_esp32")
             snap = session_snapshot(sid, self.db)
             await m.stop(sid)
             return snap
@@ -148,21 +182,23 @@ class LiveRouteTest(unittest.TestCase):
         engine = create_engine(f"sqlite:///{self.tmp.name}/route.db", connect_args={"check_same_thread": False})
         Base.metadata.create_all(engine)
         # The app's lifespan runs init_db on database.engine; other test modules leave it on a deleted file.
-        self._old = (database.engine, database.SessionLocal, runs_module.LIVE_DATA_DIR)
+        self._old = (database.engine, database.SessionLocal, runs_module.LIVE_DATA_DIR, sensor_api.DEVICE_TOKEN)
         database.engine = engine
         database.SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
         runs_module.LIVE_DATA_DIR = Path(self.tmp.name) / "live"
+        sensor_api.DEVICE_TOKEN = "device-secret"
 
     def tearDown(self):
-        database.engine, database.SessionLocal, runs_module.LIVE_DATA_DIR = self._old
+        database.engine, database.SessionLocal, runs_module.LIVE_DATA_DIR, sensor_api.DEVICE_TOKEN = self._old
         self.tmp.cleanup()
 
     def test_batches_route_to_the_live_session_and_are_validated(self):
         table = load_scenario("S1")
         full = np.column_stack([table.source_ms, table.samples])
         chunks = list(fake_esp32.batches(full, None, 0))
-        with TestClient(app) as client:
-            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32"}).json()["id"]
+        auth = {"Authorization": "Bearer device-secret"}
+        with TestClient(app, headers=auth) as client:
+            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32"}).json()["id"]
             try:
                 ok = client.post("/api/sensor/batch", json=fake_esp32.payload(chunks[0], 1, "fake-esp32", "b1", 0, 0))
                 self.assertEqual(ok.status_code, 200)
@@ -172,6 +208,13 @@ class LiveRouteTest(unittest.TestCase):
                 legacy = fake_esp32.payload(chunks[1], 1, "fake-esp32", "b1", 1, 0)
                 del legacy["boot_id"]
                 self.assertEqual(client.post("/api/sensor/batch", json=legacy).status_code, 422)
+                no_token = client.post("/api/sensor/batch", headers={"Authorization": "Bearer wrong"},
+                                       json=fake_esp32.payload(chunks[1], 1, "fake-esp32", "b1", 1, 0))
+                self.assertEqual(no_token.status_code, 401)
+                sensor_api.DEVICE_TOKEN = ""
+                unset = client.post("/api/sensor/batch", json=fake_esp32.payload(chunks[1], 1, "fake-esp32", "b1", 1, 0))
+                self.assertEqual(unset.status_code, 503)
+                sensor_api.DEVICE_TOKEN = "device-secret"
                 snap = client.get(f"/api/spatial/sessions/{sid}").json()
                 self.assertEqual((snap["kind"], snap["live"]["samples_accepted"], snap["live"]["status_label"]),
                                  ("live", 10, "Warming up"))

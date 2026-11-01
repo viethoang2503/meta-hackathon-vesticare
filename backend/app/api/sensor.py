@@ -475,6 +475,10 @@ def ingest_sensor_data(
 def _ingest_live_batch(session_id: str, payload: SensorBatchPayload) -> dict:
     """A live session owns this patient's samples: one detector and one policy, in spatial_runs.
     The legacy alert path does not see them."""
+    if not DEVICE_TOKEN:
+        # verify_device_token lets anything through when no token is set; MVP2_ARCHITECTURE.md
+        # requires one for live samples because the tunnel makes this route public.
+        raise HTTPException(status_code=503, detail="Set DEVICE_TOKEN before streaming to a live session")
     if payload.device_id != spatial_runs.live_device(session_id):
         raise HTTPException(status_code=409, detail="This device is not the one paired with the live session")
     if not payload.boot_id or any(s.sample_seq is None or s.device_ms is None for s in payload.samples):
