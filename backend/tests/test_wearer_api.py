@@ -160,3 +160,16 @@ class WearerApiTest(unittest.TestCase):
             self.assertEqual(client.get("/index.html", headers=tunnel).status_code, 403)
             self.assertEqual(client.get("/glasses/index.html", headers=tunnel).status_code, 200)
             self.assertEqual(client.get("/api/wearer/none/poll", headers={**tunnel, "X-Wearer-Token": "x"}).status_code, 401)
+
+
+    def test_the_deadline_alerts_even_if_the_phone_never_played_the_question(self):
+        with TestClient(app) as client:
+            sid, iid = self.open_incident(client)
+            try:
+                self.wait_state(client, sid, "alerted", seconds=6)   # nobody polled, nothing was played
+                snap = self.snapshot(client, sid)
+                self.assertEqual([u["status"] for u in snap["wearer"]["spoken"]], ["queued"])
+                self.assertEqual(snap["wearer"]["status"], "Unknown")
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+                client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
