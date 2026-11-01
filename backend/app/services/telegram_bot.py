@@ -70,7 +70,8 @@ def send_fall_alert(
         logger.info("Telegram notification sent for alert_id=%d", alert_id)
         return True, None
     except Exception as exc:
+        # str(exc) of an httpx error includes the request URL, which carries the bot token.
         logger.warning(
-            "Telegram notification failed for alert_id=%d: %s", alert_id, exc
+            "Telegram notification failed for alert_id=%d: %s", alert_id, type(exc).__name__
         )
-        return False, str(exc)
+        return False, type(exc).__name__
