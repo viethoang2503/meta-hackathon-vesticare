@@ -6,8 +6,9 @@ struct ImuSample {
     float svm;
 };
 
+// Gyro bias only. The accelerometer stays raw, gravity included, like SisFall:
+// subtracting a resting mean would bake one orientation into every later sample.
 struct ImuOffsets {
-    float ax, ay, az;
     float gx, gy, gz;
 };
 

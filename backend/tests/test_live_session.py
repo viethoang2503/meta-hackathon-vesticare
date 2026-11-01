@@ -216,8 +216,43 @@ class LiveRouteTest(unittest.TestCase):
                 self.assertEqual(unset.status_code, 503)
                 sensor_api.DEVICE_TOKEN = "device-secret"
                 snap = client.get(f"/api/spatial/sessions/{sid}").json()
+                self.assertEqual(snap["live"]["clock"], {"status": "Unsynchronized"})
                 self.assertEqual((snap["kind"], snap["live"]["samples_accepted"], snap["live"]["status_label"]),
                                  ("live", 10, "Warming up"))
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+
+
+class ClockRouteTest(LiveRouteTest):
+    def test_five_rounds_map_device_time_onto_the_session_clock(self):
+        import time
+        device_zero = time.monotonic() * 1000 - 40_000   # the device booted 40 s before the backend clock reads now
+        device_now = lambda: round(time.monotonic() * 1000 - device_zero)
+        ident = {"device_id": "fake-esp32", "boot_id": "b1"}
+        with TestClient(app, headers={"Authorization": "Bearer device-secret"}) as client:
+            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32"}).json()["id"]
+            try:
+                self.assertEqual(client.post("/api/sensor/clock/report", json={**ident, "rounds": [
+                    {"t0": 1, "t1": 2, "t2": 3, "t3": 4}]}).status_code, 422)
+                rounds = []
+                for _ in range(5):
+                    t0 = device_now()
+                    reply = client.post("/api/sensor/clock", json=ident).json()
+                    rounds.append({"t0": t0, **reply, "t3": device_now()})
+                mapping = client.post("/api/sensor/clock/report", json={**ident, "rounds": rounds}).json()
+                self.assertAlmostEqual(mapping["offset_ms"], device_zero, delta=mapping["uncertainty_ms"] + 2)
+                d0 = device_now()
+                batch = {**fake_esp32.payload([], 1, "fake-esp32", "b1", 0, 0), "samples": [
+                    {"sample_seq": i, "device_ms": d0 + 20 * i, "ax": 0, "ay": 0, "az": 1, "gx": 0, "gy": 0, "gz": 0}
+                    for i in range(10)]}
+                self.assertEqual(client.post("/api/sensor/batch", json=batch).status_code, 200)
+                snap = client.get(f"/api/spatial/sessions/{sid}").json()
+                self.assertEqual(snap["live"]["clock"]["offset_ms"], mapping["offset_ms"])
+                journal = np.loadtxt(runs_module._journal_path(sid), delimiter=",", skiprows=1, ndmin=2)
+                session_ms = journal[0, runs_module.JOURNAL_COLUMNS.index("session_ms")]
+                # d0 was read a moment after Start, so on the session clock it sits just above 0.
+                self.assertGreater(session_ms, 0)
+                self.assertLess(session_ms, 5_000)
             finally:
                 client.post(f"/api/spatial/sessions/{sid}/stop")
 

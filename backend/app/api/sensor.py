@@ -472,13 +472,50 @@ def ingest_sensor_data(
     return response
 
 
+class ClockRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=64)
+    boot_id: str = Field(min_length=1, max_length=64)
+
+
+class ClockRound(BaseModel):
+    t0: float
+    t1: float
+    t2: float
+    t3: float
+
+
+class ClockReport(ClockRequest):
+    rounds: list[ClockRound] = Field(min_length=1, max_length=20)
+
+
+def _require_live_token() -> None:
+    if not DEVICE_TOKEN:
+        # verify_device_token lets anything through when no token is set; MVP2_ARCHITECTURE.md
+        # requires one for live samples and clock because the tunnel makes these routes public.
+        raise HTTPException(status_code=503, detail="Set DEVICE_TOKEN before streaming to a live session")
+
+
+@router.post("/clock")
+def clock_round(body: ClockRequest, _: None = Depends(verify_device_token)) -> dict:
+    """One clock-exchange round: t1 on receipt, t2 just before replying, backend monotonic ms."""
+    t1 = time.monotonic() * 1000
+    _require_live_token()
+    return {"t1": t1, "t2": time.monotonic() * 1000}
+
+
+@router.post("/clock/report")
+def clock_report(body: ClockReport, _: None = Depends(verify_device_token)) -> dict:
+    _require_live_token()
+    mapping = spatial_runs.record_clock(body.device_id, body.boot_id, [r.model_dump() for r in body.rounds])
+    if mapping is None:
+        raise HTTPException(status_code=422, detail="Need at least 5 usable rounds")
+    return mapping
+
+
 def _ingest_live_batch(session_id: str, payload: SensorBatchPayload) -> dict:
     """A live session owns this patient's samples: one detector and one policy, in spatial_runs.
     The legacy alert path does not see them."""
-    if not DEVICE_TOKEN:
-        # verify_device_token lets anything through when no token is set; MVP2_ARCHITECTURE.md
-        # requires one for live samples because the tunnel makes this route public.
-        raise HTTPException(status_code=503, detail="Set DEVICE_TOKEN before streaming to a live session")
+    _require_live_token()
     if payload.device_id != spatial_runs.live_device(session_id):
         raise HTTPException(status_code=409, detail="This device is not the one paired with the live session")
     if not payload.boot_id or any(s.sample_seq is None or s.device_ms is None for s in payload.samples):

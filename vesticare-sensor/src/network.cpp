@@ -35,8 +35,13 @@ bool ensureConnected(const char* ssid, const char* password, unsigned long timeo
 }
 
 int sendBatch(const char* backend_url, const char* device_token, const std::string& json_payload) {
+    return post(backend_url, "/api/sensor/batch", device_token, json_payload, nullptr);
+}
+
+int post(const char* backend_url, const char* path, const char* device_token,
+         const std::string& json_payload, std::string* response) {
     HTTPClient http;
-    std::string url = std::string(backend_url) + "/api/sensor/batch";
+    std::string url = std::string(backend_url) + path;
     http.begin(url.c_str());
     http.addHeader("Content-Type", "application/json");
     if (device_token != nullptr && strlen(device_token) > 0) {
@@ -45,6 +50,9 @@ int sendBatch(const char* backend_url, const char* device_token, const std::stri
     }
 
     int status = http.POST(json_payload.c_str());
+    if (response != nullptr && status > 0) {
+        *response = http.getString().c_str();
+    }
     http.end();
     return status;
 }

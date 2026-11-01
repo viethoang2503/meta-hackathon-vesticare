@@ -47,6 +47,20 @@ def payload(chunk, patient_id: int, device_id: str, boot_id: str, batch_id: int,
     }
 
 
+def sync_clock(client, headers, device_id: str, boot_id: str, device_now) -> dict:
+    """The firmware's five clock rounds and report (vesticare-sensor/src/main.cpp, syncClock)."""
+    ident = {"device_id": device_id, "boot_id": boot_id}
+    rounds = []
+    for _ in range(5):
+        t0 = device_now()
+        r = client.post("/api/sensor/clock", headers=headers, json=ident)
+        r.raise_for_status()
+        rounds.append({"t0": t0, **r.json(), "t3": device_now()})
+    r = client.post("/api/sensor/clock/report", headers=headers, json={**ident, "rounds": rounds})
+    r.raise_for_status()
+    return r.json()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scenario")
@@ -70,6 +84,9 @@ def main() -> int:
         boot_id = uuid.uuid4().hex[:12]
         sent, last = 0, {}
         started = time.monotonic()
+        # The fake device clock runs from boot like millis(); in real time it matches device_ms below.
+        device_now = lambda: BOOT_DEVICE_MS + round((time.monotonic() - started) * 1000)
+        print(f"clock {sync_clock(client, headers, args.device, boot_id, device_now)}")
         for batch_id, chunk in enumerate(batches(table, args.gap_at, args.gap_ms)):
             dropped = chunk[-1][0] + 1 - sent - len(chunk)  # samples the "device" skipped so far
             sent += len(chunk)

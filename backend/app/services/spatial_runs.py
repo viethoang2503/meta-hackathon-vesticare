@@ -71,6 +71,7 @@ from app.services.broadcaster import broadcaster
 from app.services.fall_detection import FallDetectionService, fall_detection_service
 from app.services import muse_client, sam_client
 from app.services.incident_agent import run_agent
+from app.services.clock_sync import best_mapping
 from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
 from app.services.monitoring import StreamMonitor
 from app.services.scene_context import frame_near, home_manifest, location_at
@@ -100,7 +101,8 @@ class LiveRunEnded(Exception):
 # fake device is never shown as this project's ESP32.
 LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated device (recorded scenario)"}
 UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
-JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
+# session_ms is device time mapped onto the session clock, nan while the device is unsynchronized.
+JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "session_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
 
 
 @dataclass
@@ -112,6 +114,7 @@ class LiveRun:
     wearer_cancel: float
     monitor: StreamMonitor
     journal: Path
+    started_mono_ms: float
     stream: LiveStream | None = None
     incident_rows: dict = field(default_factory=dict)
     ingest_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -231,6 +234,7 @@ class SpatialRunManager:
         self._live_run_timeout = live_run_timeout_seconds
         self._live_data_dir = live_data_dir
         self._live: dict[str, LiveRun] = {}
+        self._clocks: dict[tuple[str, str], dict] = {}  # (device_id, boot_id) -> latest mapping
         self._loop: asyncio.AbstractEventLoop | None = None
 
     def _db(self):
@@ -326,6 +330,7 @@ class SpatialRunManager:
             patient_id=patient_id, device_id=device_id, wearer_cancel=self._live_wearer_cancel,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
             journal=_journal_path(session_id, self._live_data_dir),
+            started_mono_ms=time.monotonic() * 1000,
         )
         self._runs[session_id] = asyncio.create_task(self._live_watch(session_id))
         _hint(session_id, "started")
@@ -346,6 +351,14 @@ class SpatialRunManager:
             self._runs.pop(session_id, None)
             self._locks.pop(session_id, None)
             self._stop_requested.pop(session_id, None)
+
+    def record_clock(self, device_id: str, boot_id: str, rounds: list[dict]) -> dict | None:
+        """Stores the device's latest clock mapping. A new mapping applies to samples received
+        from now on; samples already journalled keep the mapping they were stored with."""
+        mapping = best_mapping(rounds)
+        if mapping is not None:
+            self._clocks[(device_id, boot_id)] = {**mapping, "synced_at": _utcnow().isoformat(timespec="seconds")}
+        return mapping
 
     def live_session_for(self, patient_id: int) -> str | None:
         return next((sid for sid, run in self._live.items() if run.patient_id == patient_id), None)
@@ -376,8 +389,10 @@ class SpatialRunManager:
                 if step.reset is not None:
                     run.monitor.reset_window()
                 events.append(run.monitor.add_sample(step.source_ms, step.values))
-            _append_journal(run.journal, steps, received_at)
-            stats = {**run.stream.stats(), **stats_extra}
+            clock = self._clocks.get((run.device_id, boot_id))
+            session_offset = clock["offset_ms"] - run.started_mono_ms if clock else None
+            _append_journal(run.journal, steps, received_at, session_offset)
+            stats = {**run.stream.stats(), **stats_extra, "clock": clock or {"status": "Unsynchronized"}}
             with lock, self._db() as db:
                 session = db.get(SpatialSession, session_id)
                 if session is None or session.status != "Running":
@@ -836,7 +851,7 @@ def _evidence_bundle(scenario: Scenario, row, sam, others) -> dict:
     }
 
 
-def _append_journal(path: Path, steps, received_at: datetime) -> None:
+def _append_journal(path: Path, steps, received_at: datetime, session_offset: float | None) -> None:
     """The live session's own IMU record; incident_detail reads it back."""
     if not steps:
         return
@@ -847,7 +862,9 @@ def _append_journal(path: Path, steps, received_at: datetime) -> None:
         if new:
             f.write(",".join(JOURNAL_COLUMNS) + "\n")
         for st in steps:
-            f.write(f"{st.source_ms},{st.seq},{st.device_ms},{received}," + ",".join(f"{float(v):.5f}" for v in st.values) + "\n")
+            session_ms = f"{st.device_ms + session_offset:.1f}" if session_offset is not None else "nan"
+            f.write(f"{st.source_ms},{st.seq},{st.device_ms},{received},{session_ms},"
+                    + ",".join(f"{float(v):.5f}" for v in st.values) + "\n")
 
 
 def _journal_path(session_id: str, live_data_dir: Path | None = None) -> Path:
@@ -1015,7 +1032,7 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
         live = session.kind == "live"
         if live:
             table = _read_journal(_journal_path(session.id))
-            source_ms, samples = table[:, 0].astype(np.int64), table[:, 4:]
+            source_ms, samples = table[:, 0].astype(np.int64), table[:, JOURNAL_COLUMNS.index("ax"):]
             source = json.loads(session.config_snapshot or "{}").get("source", "esp32")
             location, imu_source, segments = UNKNOWN_LOCATION, LIVE_SOURCE_LABELS[source], []
             frame = {"status": "Unavailable", "reason": "No camera frames in a live session yet",
