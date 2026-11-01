@@ -104,6 +104,14 @@ class LiveRunEnded(Exception):
     pass
 
 
+class DrillRefused(Exception):
+    """Why a voice drill cannot open now: not_a_drill_session, busy or run_ended."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class LiveNotReady(Exception):
     """A live session that sends for real needs both Telegram contacts (MVP2.md, Live ready)."""
 
@@ -111,7 +119,9 @@ class LiveNotReady(Exception):
 # A live session has no measured position (MVP2.md, Mục tiêu và phạm vi).
 # MVP2.md M6: data is labelled by where it came from, so a recording replayed through the
 # fake device is never shown as this project's ESP32.
-LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated device (recorded scenario)"}
+LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated device (recorded scenario)",
+                      "drill": "Voice drill (no device, no fall detected)"}
+DRILL_EXPECTED = ("ok", "help", "ambiguous", "silence", "loudspeaker")
 UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
 # session_ms is device time mapped onto the session clock, nan while the device is unsynchronized.
 JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "session_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
@@ -136,6 +146,7 @@ class LiveRun:
     monitor: StreamMonitor
     journal: Path
     started_mono_ms: float
+    drill: bool = False
     stream: LiveStream | None = None
     incident_rows: dict = field(default_factory=dict)
     ingest_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -378,15 +389,22 @@ class SpatialRunManager:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
 
     async def start_live(self, patient_id: int, device_id: str, source: str = "esp32",
-                         notification_mode: str = "telegram") -> str:
+                         notification_mode: str = "telegram", wearer_cancel_seconds: float | None = None) -> str:
         """Start a live session for one device. Samples arrive through ingest_live; the boot id is
-        pinned by the first batch. One active run at a time, replay or live."""
+        pinned by the first batch. One active run at a time, replay or live.
+
+        source "drill" is a voice drill for the M7 trials: no device, incidents opened by hand with
+        open_drill, never sent anywhere (simulated is forced), and the window may be shortened."""
+        drill = source == "drill"
+        if drill:
+            notification_mode = "simulated"
+        wearer_cancel = (wearer_cancel_seconds if drill and wearer_cancel_seconds else self._live_wearer_cancel)
         notifier = self._pick_notifier("live", notification_mode)
         with self._db() as db:
             self._refuse_if_busy(db)
             session_id = uuid.uuid4().hex
             config = {
-                "wearer_cancel_seconds": self._live_wearer_cancel,
+                "wearer_cancel_seconds": wearer_cancel,
                 "caregiver_ack_seconds": self._caregiver_ack,
                 "late_help_grace_seconds": self._grace,
                 "sampling_rate_hz": SAMPLING_RATE,
@@ -408,11 +426,11 @@ class SpatialRunManager:
         self._loop = asyncio.get_running_loop()
         self._locks[session_id] = threading.Lock()
         self._stop_requested[session_id] = asyncio.Event()
-        self._incident_cfg[session_id] = IncidentConfig(self._live_wearer_cancel, self._caregiver_ack, self._grace)
+        self._incident_cfg[session_id] = IncidentConfig(wearer_cancel, self._caregiver_ack, self._grace)
         self._session_notifiers[session_id] = notifier
         self._channels[session_id] = WearerChannel()
         self._live[session_id] = LiveRun(
-            patient_id=patient_id, device_id=device_id, wearer_cancel=self._live_wearer_cancel,
+            patient_id=patient_id, device_id=device_id, wearer_cancel=wearer_cancel, drill=drill,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
             journal=_journal_path(session_id, self._live_data_dir),
             started_mono_ms=time.monotonic() * 1000,
@@ -423,6 +441,48 @@ class SpatialRunManager:
             self._background(asyncio.to_thread(whisper_model))
         _hint(session_id, "started")
         return session_id
+
+    async def open_drill(self, session_id: str, expected: str, person: str) -> dict:
+        """Opens an incident by hand in a drill session so the voice path can be measured without a
+        fall. The incident is labelled voice_drill and carries what the person was told to do; the
+        wearer window, listening, cancel, HELP and grace all run through the same policy as a real
+        incident. One wearer-facing incident at a time: the phone listens for one."""
+        run, lock, cfg = self._live.get(session_id), self._locks.get(session_id), self._incident_cfg.get(session_id)
+        if run is None or lock is None or cfg is None:
+            raise DrillRefused("run_ended")
+        if not run.drill:
+            raise DrillRefused("not_a_drill_session")
+        if expected not in DRILL_EXPECTED:
+            raise DrillRefused("unknown_expected")
+
+        def create():
+            with lock, self._db() as db:
+                session = db.get(SpatialSession, session_id)
+                if session is None or session.status != "Running":
+                    raise DrillRefused("run_ended")
+                now = _utcnow()
+                busy = db.query(AlertEvent).filter(
+                    AlertEvent.session_id == session_id,
+                    AlertEvent.spatial_state.in_(("awaiting_wearer", "cancelled_by_wearer")),
+                    AlertEvent.wearer_deadline_at > now).first()
+                if busy is not None:
+                    raise DrillRefused("busy")
+                row = AlertEvent(
+                    patient_id=run.patient_id, timestamp=now, alert_type="FALL", confidence=0.0, peak_svm=0.0,
+                    is_acknowledged=False, notification_status="pending", spatial_state="awaiting_wearer",
+                    wearer_deadline_at=now + timedelta(seconds=cfg.wearer_cancel), session_id=session_id,
+                    source_start_ms=session.source_offset_ms, source_end_ms=session.source_offset_ms,
+                    decision_source="voice_drill")
+                db.add(row)
+                db.flush()
+                db.add(SpatialAction(session_id=session_id, incident_id=row.id, kind="drill", target=person,
+                                     created_at=now, detail=json.dumps({"expected": expected, "person": person})))
+                db.commit()
+                return row.id, row.wearer_deadline_at
+        incident_id, deadline = await asyncio.to_thread(create)
+        self._track(session_id, self._incident_timeline(session_id, lock, incident_id))
+        _hint(session_id, "incident")
+        return {"incident_id": incident_id, "deadline": deadline.isoformat(), "window_s": cfg.wearer_cancel}
 
     async def _live_watch(self, session_id: str) -> None:
         """Holds a live session open until Stop or the run timeout; there is no replay to drive."""
