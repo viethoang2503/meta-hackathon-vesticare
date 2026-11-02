@@ -24,7 +24,7 @@ def journal(n=3000, gravity=(0.0, -1.0, 0.0), skip=(), step_ms=20, edit=None):
     return np.array(rows, dtype=float)
 
 
-STATS = {"dropped_at_source": 0, "duplicates": 0, "rejected_batches": 0, "coverage": 0.99,
+STATS = {"dropped_at_source": 0, "dropped_in_session": 0, "duplicates": 0, "rejected_batches": 0, "coverage": 0.99,
          "unavailable_ms": 600, "first_warmup_ms": 1980, "reset_count": 0, "resets": []}
 
 
@@ -60,7 +60,7 @@ def test_gravity_on_another_axis_is_flagged_against_the_training_data():
 
 def test_losses_are_split_between_source_and_transport():
     table = journal(skip=set(range(1000, 1060)))          # 60 samples never arrived
-    stats = {**STATS, "dropped_at_source": 20}           # the device itself dropped 20 of them
+    stats = {**STATS, "dropped_at_source": 20, "dropped_in_session": 20}   # the device itself dropped 20 of them
     t = g4_report.analyse(table, stats, [], {}, "esp32", TRAIN_MEAN)["rows"]["transport"]
     assert (t["lost"], t["of_acquired_kept"], t["pass"]) == (40, 2980, False)
 
@@ -84,3 +84,18 @@ def test_clipping_and_detector_trials():
     assert (r["range"]["clipped_samples"], r["range"]["pass"], r["range"]["fall_peak_svm_g"]) == (1, False, [16.0])
     assert (r["detector"]["falls_detected"], r["detector"]["adl_with_false_alarm"]) == (1, 1)
     assert r["detector"]["fall_trials"][0]["incidents"] == [{"id": 7, "decision_source": "keras"}]
+
+
+def test_drops_counted_before_the_session_are_not_subtracted_from_its_transport_loss():
+    """Review finding 8: the device counter runs from boot. 1,000 earlier drops hid 320 lost samples."""
+    table = journal(n=16_000, skip=set(range(2000, 2320)))          # 320 samples (2%) never arrived
+    stats = {**STATS, "dropped_at_source": 1000, "dropped_in_session": 0}   # all 1,000 happened before this session
+    rows = g4_report.analyse(table, stats, [], {}, "esp32", TRAIN_MEAN)["rows"]
+    assert (rows["transport"]["lost"], rows["transport"]["pass"]) == (320, False)
+    assert rows["acquisition"]["dropped_at_source"] == 0
+
+
+def test_a_session_without_a_drop_baseline_cannot_pass_transport():
+    legacy = {k: v for k, v in STATS.items() if k != "dropped_in_session"}
+    rows = g4_report.analyse(journal(), legacy, [], {}, "esp32", TRAIN_MEAN)["rows"]
+    assert (rows["transport"]["drop_baseline_known"], rows["transport"]["pass"]) == (False, False)

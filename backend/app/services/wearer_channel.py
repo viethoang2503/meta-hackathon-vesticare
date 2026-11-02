@@ -133,13 +133,14 @@ class WearerChannel:
             out.append(u)
         return out
 
-    def played(self, utterance_id: int, speech_span: tuple[datetime, datetime] | None, now: datetime) -> bool:
+    def played(self, utterance_id: int, speech_span: tuple[datetime, datetime] | None, now: datetime,
+               reason: str | None = None) -> bool:
         """Marks a line played and keeps its speech plus guard as a quiet span. Without a mapped
         span the whole time from queueing to this report is quiet, which can only exclude more."""
         u = next((u for u in self.utterances if u.id == utterance_id), None)
         if u is None or u.status != "queued":
             return False
-        u.status = "played"
+        u.status, u.reason = "played", reason
         start, end = speech_span or (u.created_at, now)
         self.quiet.append((start, end + timedelta(milliseconds=GUARD_MS)))
         return True

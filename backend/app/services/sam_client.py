@@ -10,6 +10,7 @@ store; never invents a result.
 from __future__ import annotations
 
 import base64
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -60,21 +61,26 @@ def segment(image: bytes, mime: str, prompt: str) -> SamResult:
         }],
     }
     started = time.perf_counter()
+    deadline = time.monotonic() + ANALYSIS_TIMEOUT_SECONDS
     try:
-        resp = httpx.post(
-            f"{MODEL_API_BASE}/responses",
-            json=body,
-            headers={"Authorization": f"Bearer {MODEL_API_KEY}"},
-            timeout=ANALYSIS_TIMEOUT_SECONDS,
-        )
+        # Streamed so the whole call has one budget: httpx's timeout restarts at every chunk, and a server
+        # that trickles bytes would otherwise keep this thread alive far past the analysis timeout.
+        with httpx.stream("POST", f"{MODEL_API_BASE}/responses", json=body,
+                          headers={"Authorization": f"Bearer {MODEL_API_KEY}"}, timeout=ANALYSIS_TIMEOUT_SECONDS) as resp:
+            chunks = []
+            for chunk in resp.iter_bytes():
+                chunks.append(chunk)
+                if time.monotonic() > deadline:
+                    raise SamError("TimedOut", f"no complete response within {ANALYSIS_TIMEOUT_SECONDS} s")
+            content, status = b"".join(chunks), resp.status_code
     except httpx.TimeoutException:
         raise SamError("TimedOut", f"no response within {ANALYSIS_TIMEOUT_SECONDS} s")
     except httpx.HTTPError as exc:
         raise SamError("Failed", f"request error: {type(exc).__name__}")
-    if resp.status_code != 200:
-        raise SamError("Failed", f"HTTP {resp.status_code}: {resp.text[:200]}")
+    if status != 200:
+        raise SamError("Failed", f"HTTP {status}: {content[:200].decode('utf-8', errors='replace')}")
     try:
-        payload = resp.json()
+        payload = json.loads(content)
     except ValueError:
         raise SamError("Failed", "response was not JSON")
     if payload.get("status") not in (None, "completed"):

@@ -20,7 +20,7 @@ from app.services.fall_detection import fall_detection_service
 from app.services.live_stream import DeviceSample, LiveStream
 from app.services.monitoring import StreamMonitor
 from app.services.policy_replay import PolicyConfig, chain, simulate
-from app.services.s3_package import JOURNAL_COLUMNS, _sha
+from app.services.s3_package import JOURNAL_COLUMNS, _sha, config_differences, detector_config
 
 COL = {name: i for i, name in enumerate(JOURNAL_COLUMNS)}
 VALUES = [COL[c] for c in ("ax", "ay", "az", "gx", "gy", "gz", "svm")]
@@ -47,7 +47,7 @@ def replay_policy(package: dict) -> list[dict]:
     config = PolicyConfig(cfg["wearer_cancel_seconds"], cfg["caregiver_ack_seconds"], cfg["late_help_grace_seconds"])
     out = []
     for incident in package["responses"]["incidents"]:
-        events = [{k: e[k] for k in ("kind", "reply", "actor", "capture_end_ms", "policy_ms") if k in e}
+        events = [{k: e[k] for k in ("kind", "reply", "actor", "capture_end_ms", "policy_ms", "spoken") if k in e}
                   for e in incident["events"]]
         out.append({"index": incident["index"], **simulate(config, events, incident["sends"])})
     return out
@@ -68,10 +68,11 @@ def run_replay(package: dict) -> dict:
     deltas = [abs(a - b) for r, e in zip(policy[0], recorded) for a, b in zip(_times(r), _times(e))] or [0]
     recorded_model = package["manifest"]["model"]
     same_model = (_sha(KERAS_MODEL_PATH), _sha(SCALER_PARAMS_PATH)) == (recorded_model["keras_sha256"], recorded_model["scaler_sha256"])
-    m5a_same = detector[0] == detector[1] and same_model
+    differences = config_differences(package["manifest"]["config"].get("detector"), detector_config())
+    m5a_same = detector[0] == detector[1] and same_model and not differences
     m5b_same = policy[0] == policy[1]
     return {
-        "M5a": {"status": "Pass" if m5a_same else "Fail", "replays_identical": detector[0] == detector[1], "same_model": same_model,
+        "M5a": {"status": "Pass" if m5a_same else "Fail", "replays_identical": detector[0] == detector[1], "same_model": same_model, "same_config": not differences, "config_differences": differences,
                 "incidents": [len(d) for d in detector],
                 "source_start_ms": [[i["source_start_ms"] for i in d] for d in detector],
                 "matches_recorded": detector[0] == expected["incidents"], "recorded_incidents": len(expected["incidents"])},

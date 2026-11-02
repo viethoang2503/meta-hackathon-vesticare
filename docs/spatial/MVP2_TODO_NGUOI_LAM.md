@@ -43,6 +43,7 @@ Không dán token, mật khẩu Wi-Fi hay link có `#t=` vào chat hoặc commit
 
 ## Đã xong
 
+- U9: `ACCEPTANCE_MVP2.md`, `SUBMISSION_MVP2.md`, `DEMO_MVP2.md` viết theo bản chạy (2026-11-02). Khi có bằng chứng thật cho một M, cập nhật dòng M đó và bỏ nhãn "giả lập".
 - U8 phần code: ghi ảnh khi phiên được đánh dấu, xuất gói S3, phát lại M5a/M5b, bảng M4 (2026-11-02). Đã chạy thử trên phiên giả lập, chưa có dữ liệu thật.
 - U7: agent trả lời có dẫn bằng chứng, trang laptop `http://127.0.0.1:8010/spatial/live.html` (bắt đầu phiên, trạng thái thiết bị/điện thoại/camera, lời người đeo nghe và nói, incident, bằng chứng), mã ghép nối dùng một lần cho QR (2026-11-02).
 - Công cụ bảng M3: trang `spatial/stairs.html`, phiên `camera_trial` (2026-11-02).

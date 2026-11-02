@@ -57,7 +57,8 @@ class LiveStream:
     samples_accepted: int = 0
     duplicates: int = 0
     rejected_batches: int = 0
-    dropped_at_source: int = 0
+    dropped_at_source: int = 0   # the device's counter, cumulative since boot
+    dropped_first: int | None = None  # that counter at the first batch: drops before the session are not the session's
     resets: list[dict] = field(default_factory=list)
     _origin_ms: int | None = None
     _last_seq: int | None = None
@@ -102,6 +103,8 @@ class LiveStream:
             self.rejected_batches += 1
             raise
         self.duplicates += len(samples) - len(fresh)
+        if self.dropped_first is None:
+            self.dropped_first = dropped_at_source
         self.dropped_at_source = max(self.dropped_at_source, dropped_at_source)
         return [self._step(s) for s in fresh]
 
@@ -163,6 +166,7 @@ class LiveStream:
             "duplicates": self.duplicates,
             "rejected_batches": self.rejected_batches,
             "dropped_at_source": self.dropped_at_source,
+            "dropped_in_session": self.dropped_at_source - (self.dropped_first or 0),
             "resets": self.resets[-50:],
             "reset_count": len(self.resets),
             "last_source_ms": self._last_source_ms,

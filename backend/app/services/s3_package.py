@@ -27,9 +27,15 @@ import numpy as np
 from app import database
 from app.config import (
     ANALYSIS_TIMEOUT_SECONDS,
+    FALL_CONFIRM_SECONDS,
     FALL_STILLNESS_GYRO_MEAN_MAX,
     FALL_STILLNESS_SECONDS,
     FALL_STILLNESS_SVM_STD_MAX,
+    FALL_STILLNESS_WINDOW_SECONDS,
+    ML_INSTABILITY_CONFIDENCE_THRESHOLD,
+    SPATIAL_FALL_MERGE_SECONDS,
+    SVM_NORMAL_MAX,
+    SVM_SWAY_THRESHOLD,
     KERAS_MODEL_PATH,
     MODEL_API_KEY,
     ML_CONFIDENCE_THRESHOLD,
@@ -40,6 +46,7 @@ from app.config import (
     WINDOW_SIZE,
 )
 from app.models.schemas import AlertEvent, SpatialAction, SpatialSession
+from app.services.live_stream import MAX_SAMPLE_GAP_MS
 
 SCHEMA_VERSION = 1
 FRAME_LABEL = "Phone camera at eye height (glasses proxy)"
@@ -77,12 +84,14 @@ def incident_record(db, row, config: dict) -> dict:
         if a.kind == "self_report":
             speech = detail.get("speech", {})
             capture_end = _utc_ms(t0, detail.get("capture_end"))
-            events.append({"kind": "reply", "reply": detail["response"], "capture_end_ms": capture_end, "policy_ms": at})
+            events.append({"kind": "reply", "reply": detail["response"], "capture_end_ms": capture_end, "policy_ms": at,
+                           "spoken": bool(speech)})
             recorded.append({"t_ms": at, "kind": "self_report", "target": "wearer", "response": detail["response"],
                              "applied": detail["applied"], "reason": detail["reason"],
                              "cancelled_alert": detail["cancelled_alert"], "raised_alert": detail["raised_alert"],
                              "late_ok": detail["late_ok"]})
             responses.append({"kind": "reply", "reply": detail["response"], "policy_ms": at, "capture_end_ms": capture_end,
+                              "spoken": bool(speech),
                               "capture_start_ms": _utc_ms(t0, speech.get("capture_start")),
                               "received_ms": _utc_ms(t0, speech.get("received_at")),
                               "transcript": speech.get("transcript"), "applied": detail["applied"], "reason": detail["reason"],
@@ -106,6 +115,55 @@ def incident_record(db, row, config: dict) -> dict:
             "final": {"state": row.spatial_state, "alert_reason": row.alert_reason, "acknowledged": bool(row.is_acknowledged)}}
 
 
+def detector_config() -> dict:
+    """Everything outside the model files that decides which incidents the detector opens. Recorded in the
+    package and checked again on replay: another value gives another detector."""
+    return {"sampling_rate_hz": SAMPLING_RATE, "window_size": WINDOW_SIZE, "max_sample_gap_ms": MAX_SAMPLE_GAP_MS,
+            "svm_fall_threshold_g": SVM_FALL_THRESHOLD, "svm_sway_threshold_g": SVM_SWAY_THRESHOLD,
+            "svm_normal_max_g": SVM_NORMAL_MAX, "ml_confidence_threshold": ML_CONFIDENCE_THRESHOLD,
+            "ml_instability_confidence_threshold": ML_INSTABILITY_CONFIDENCE_THRESHOLD,
+            "fall_confirm_seconds": FALL_CONFIRM_SECONDS, "fall_merge_seconds": SPATIAL_FALL_MERGE_SECONDS,
+            "stillness": {"seconds": FALL_STILLNESS_SECONDS, "window_seconds": FALL_STILLNESS_WINDOW_SECONDS,
+                          "svm_std_max": FALL_STILLNESS_SVM_STD_MAX, "gyro_mean_max": FALL_STILLNESS_GYRO_MEAN_MAX}}
+
+
+def config_differences(recorded: dict | None, current: dict, prefix: str = "") -> list[str]:
+    """What differs between the recorded detector config and the one running now. A key the package does
+    not record counts as unverified, not as equal."""
+    if recorded is None:
+        return ["the package does not record the detector config"]
+    out = []
+    for key, value in current.items():
+        name = f"{prefix}{key}"
+        if key not in recorded:
+            out.append(f"{name} is not recorded")
+        elif isinstance(value, dict):
+            out += config_differences(recorded[key], value, f"{name}.") if isinstance(recorded[key], dict) else [f"{name} is not recorded"]
+        elif recorded[key] != value:
+            out.append(f"{name}: recorded {recorded[key]}, now {value}")
+    return out
+
+
+def unfinished(db, session, row, config: dict, now: datetime) -> str | None:
+    """Why an incident's record is not complete yet, or None. A package of a half-played incident would
+    carry a final state the policy has not reached."""
+    grace = timedelta(seconds=config["late_help_grace_seconds"])
+    if row.spatial_state == "awaiting_wearer":
+        return "it is still waiting for the wearer"
+    if now < row.wearer_deadline_at + grace:
+        return f"its response window and grace run until {(row.wearer_deadline_at + grace).isoformat(timespec='seconds')} UTC"
+    sends = db.query(SpatialAction).filter(SpatialAction.incident_id == row.id, SpatialAction.kind.in_(
+        ("notify", "escalate", "late_ok", "agent_update"))).all()
+    if any(json.loads(a.detail or "{}").get("status") == "scheduled" for a in sends):
+        return "a message is still being sent"
+    escalated = any(a.kind == "escalate" for a in sends)
+    if row.spatial_state == "alerted" and not row.is_acknowledged and not escalated:
+        if row.caregiver_deadline_at is None or now < row.caregiver_deadline_at:
+            return "the caregiver acknowledgement window is still open"
+        return "the escalation after the acknowledgement window has not been recorded"
+    return None
+
+
 def _secrets(extra: list[str]) -> list[str]:
     import os
     return [s for s in [MODEL_API_KEY, TELEGRAM_BOT_TOKEN, os.environ.get("DEVICE_TOKEN", ""), *extra] if s and len(s) >= 8]
@@ -123,7 +181,7 @@ def scan_for_secrets(folder: Path, secrets: list[str]) -> list[str]:
 
 
 def build(session_id: str, out_dir: Path, consent: dict, live_data_dir: Path, *, session_factory=None,
-          extra_secrets: list[str] = (), force: bool = False) -> dict:
+          extra_secrets: list[str] = (), force: bool = False, allow_incomplete: bool = False) -> dict:
     """Writes the package for a finished live session. Raises PackageRefused when it cannot be made."""
     missing = [k for k in CONSENT_FIELDS if not consent.get(k)]
     if missing or consent["publication"] not in ("granted", "not_granted"):
@@ -141,6 +199,12 @@ def build(session_id: str, out_dir: Path, consent: dict, live_data_dir: Path, *,
         stats = json.loads(session.live_stats or "{}")
         rows = db.query(AlertEvent).filter(AlertEvent.session_id == session_id).order_by(AlertEvent.source_start_ms).all()
         incidents = [(i, r, incident_record(db, r, config)) for i, r in enumerate(rows)]
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        open_items = [f"incident {i}: {why}" for i, r, _ in incidents if (why := unfinished(db, session, r, config, now))]
+        if session.status == "Interrupted":
+            open_items.append("the backend restarted during the session, so its incidents never finished")
+        if open_items and not allow_incomplete:
+            raise PackageRefused("the session is not finished: " + "; ".join(open_items))
         started_at, device_id = session.started_at, session.device_id
 
     if out_dir.exists():
@@ -180,12 +244,13 @@ def build(session_id: str, out_dir: Path, consent: dict, live_data_dir: Path, *,
                    "svm_fall_threshold_g": SVM_FALL_THRESHOLD, "ml_confidence_threshold": ML_CONFIDENCE_THRESHOLD,
                    "stillness": {"seconds": FALL_STILLNESS_SECONDS, "svm_std_max": FALL_STILLNESS_SVM_STD_MAX,
                                  "gyro_mean_max": FALL_STILLNESS_GYRO_MEAN_MAX},
-                   "analysis_timeout_seconds": ANALYSIS_TIMEOUT_SECONDS},
+                   "analysis_timeout_seconds": ANALYSIS_TIMEOUT_SECONDS, "detector": detector_config()},
         "clock": {"device": stats.get("clock"), "frame_uncertainty_ms": {
             "max": max(uncertainty) if uncertainty else None, "frames_with_clock": len(uncertainty), "frames": len(frames)}},
         "imu": {"columns": JOURNAL_COLUMNS, "coverage": stats.get("coverage"), "resets": stats.get("resets", []),
                 "dropped_at_source": stats.get("dropped_at_source")},
         "contents": {"incidents": len(incidents), "frames": len(frames), "raw_audio": "not stored"},
+        "complete": not open_items, "incomplete_reasons": open_items,
         "consent": {k: consent[k] for k in CONSENT_FIELDS},
         "hashes": {"imu.csv": _sha(out_dir / "imu.csv")},
     }

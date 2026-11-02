@@ -18,7 +18,8 @@ import heapq
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.services.incident_policy import ALERTED, AWAITING, CANCELLED, decide_deadline, decide_reply, late_ok_targets
+from app.services.incident_policy import (ALERTED, AWAITING, CANCELLED, ReplyDecision, decide_deadline, decide_reply,
+                                          late_ok_targets)
 
 BASE = datetime(2000, 1, 1)
 DEADLINE, SEND_RESULT, REPLY, ACK = 0, 1, 2, 3  # order within the same millisecond
@@ -36,7 +37,7 @@ def _at(ms: float) -> datetime:
 
 
 def simulate(config: PolicyConfig, events: list[dict], sends: dict[str, dict]) -> dict:
-    """`events`: {"kind": "reply", "reply": ok|help|unclear, "capture_end_ms": int|None, "policy_ms": int}
+    """`events`: {"kind": "reply", "reply": ok|help|unclear, "capture_end_ms": int|None, "policy_ms": int, "spoken": bool}
     and {"kind": "ack", "actor": str, "policy_ms": int}. `sends`: the recorded result of each alert send
     by contact, {"status": ..., "done_ms": int}. Returns the actions the policy took and the final state."""
     deadline_ms = round(config.wearer_cancel_s * 1000)
@@ -100,7 +101,10 @@ def simulate(config: PolicyConfig, events: list[dict], sends: dict[str, dict]) -
                 late_ok_actions(at_ms)
         elif kind == "reply":
             capture = None if payload["capture_end_ms"] is None else _at(payload["capture_end_ms"])
-            decision = decide_reply(state, payload["reply"], _at(deadline_ms), grace, _at(at_ms), capture)
+            if payload.get("spoken") and at_ms > deadline_ms + round(config.grace_s * 1000):
+                decision = ReplyDecision(reason="processed_after_grace")  # speech still pending when the grace ends
+            else:
+                decision = decide_reply(state, payload["reply"], _at(deadline_ms), grace, _at(at_ms), capture)
             if decision.alert:
                 alert(decision.alert, at_ms)
             if decision.cancel:

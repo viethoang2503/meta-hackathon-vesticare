@@ -32,6 +32,7 @@ with asyncio.to_thread keeps running after its coroutine is cancelled.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -78,13 +79,13 @@ from app.services.fall_detection import FallDetectionService, fall_detection_ser
 from app.services import muse_client, sam_client
 from app.services.incident_agent import run_agent
 from app.services.clock_sync import best_mapping
-from app.services.incident_policy import ALERTED, CANCELLED, decide_deadline, decide_reply, late_ok_targets
+from app.services.incident_policy import ReplyDecision, ALERTED, CANCELLED, decide_deadline, decide_reply, late_ok_targets
 from app.services.notifier import SimulatedNotifier
 from app.services.notify_templates import render
 from app.services.speech import SpeechJob, SpeechWorker, whisper_model
 from app.services.responder import ResponderTools, check_say, check_send, run_responder
 from app.services.live_frames import STAIRS_PROMPT, Frame, FrameStore, SamSlot, StairsGate, scene_status
-from app.services.wearer_channel import TURN_MS, WearerChannel
+from app.services.wearer_channel import GUARD_MS, TURN_MS, WearerChannel
 from app.services.wearer_reply import classify_reply
 from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
 from app.services.monitoring import StreamMonitor
@@ -128,7 +129,12 @@ class LiveNotReady(Exception):
 LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated device (recorded scenario)",
                       "drill": "Voice drill (no device, no fall detected)",
                       "camera_trial": "Camera trial (no device, no fall detected)"}
-DRILL_EXPECTED = ("ok", "help", "ambiguous", "silence", "loudspeaker")
+# echo_prompts: the phone asks and nobody answers; echo_cancel: the laptop sends the OK and nobody answers
+# the help-only turns (MVP2.md, M7). They measure whether the phone hears its own voice.
+ECHO_KINDS = ("echo_prompts", "echo_cancel")
+ECHO_VOLUMES = ("low", "mid", "high")
+ECHO_MIN_WINDOW_S = 30  # the 20 s reminder needs time left to be heard
+DRILL_EXPECTED = ("ok", "help", "ambiguous", "silence", "loudspeaker", *ECHO_KINDS)
 UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
 # session_ms is device time mapped onto the session clock, nan while the device is unsynchronized.
 JOURNAL_COLUMNS = ["source_ms", "seq", "device_ms", "received_epoch_ms", "session_ms", "ax", "ay", "az", "gx", "gy", "gz", "svm"]
@@ -291,6 +297,10 @@ class SpatialRunManager:
         self._channels: dict[str, WearerChannel] = {}
         self._frames: dict[str, FrameStore] = {}
         self._sam_slots: dict[str, SamSlot] = {}
+        # Live SAM calls run on one thread. A call that timed out cannot be stopped, so it keeps the thread and
+        # new requests are refused until it ends, instead of running beside it.
+        self._sam_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sam")
+        self._sam_work: concurrent.futures.Future | None = None
         self._stairs: dict[str, StairsGate] = {}
         # Acks outlive the run's registry: a contact may tap long after the last task ended.
         self._idle_lock = threading.Lock()
@@ -350,6 +360,12 @@ class SpatialRunManager:
         finishing = next((sid for sid, tasks in self._incident_tasks.items() if tasks), None)
         if finishing is not None:
             raise RunAlreadyActive(finishing)
+
+    def active_live_session(self) -> str | None:
+        """The running live session, if any: a page that was refreshed finds its session again here."""
+        with self._db() as db:
+            row = db.query(SpatialSession).filter(SpatialSession.status == "Running", SpatialSession.kind == "live").first()
+            return None if row is None else row.id
 
     async def start(self, scenario_id: str) -> str:
         scenario = load_scenario(scenario_id)
@@ -458,7 +474,8 @@ class SpatialRunManager:
         _hint(session_id, "started")
         return session_id
 
-    async def open_drill(self, session_id: str, expected: str, person: str) -> dict:
+    async def open_drill(self, session_id: str, expected: str, person: str, volume: str | None = None,
+                         room: str | None = None) -> dict:
         """Opens an incident by hand in a drill session so the voice path can be measured without a
         fall. The incident is labelled voice_drill and carries what the person was told to do; the
         wearer window, listening, cancel, HELP and grace all run through the same policy as a real
@@ -470,6 +487,13 @@ class SpatialRunManager:
             raise DrillRefused("not_a_drill_session")
         if expected not in DRILL_EXPECTED:
             raise DrillRefused("unknown_expected")
+        if expected in ECHO_KINDS:
+            if volume not in ECHO_VOLUMES:
+                raise DrillRefused("volume_required")
+            if not room or not room.strip():
+                raise DrillRefused("room_required")
+            if expected == "echo_prompts" and cfg.wearer_cancel < ECHO_MIN_WINDOW_S:
+                raise DrillRefused("window_too_short")
 
         def create():
             with lock, self._db() as db:
@@ -492,7 +516,10 @@ class SpatialRunManager:
                 db.add(row)
                 db.flush()
                 db.add(SpatialAction(session_id=session_id, incident_id=row.id, kind="drill", target=person,
-                                     created_at=now, detail=json.dumps({"expected": expected, "person": person})))
+                                     created_at=now, detail=json.dumps({
+                                         "expected": expected, "person": person,
+                                         **({"volume": volume, "room": room.strip(), "guard_ms": GUARD_MS}
+                                            if expected in ECHO_KINDS else {})})))
                 db.commit()
                 return row.id, row.wearer_deadline_at
         incident_id, deadline = await asyncio.to_thread(create)
@@ -735,11 +762,19 @@ class SpatialRunManager:
         analysis.finished_at = _utcnow()
         return None
 
-    async def _run_segment(self, request) -> dict:
+    async def _live_call(self, request):
+        if self._sam_work is not None and not self._sam_work.done():
+            raise sam_client.SamError("Failed", "an earlier SAM request is still running")
+        work = self._sam_work = self._sam_executor.submit(self._segment, *request)
+        work.add_done_callback(lambda f: f.cancelled() or f.exception())  # an answer nobody waits for is not an error
+        return await asyncio.shield(asyncio.wrap_future(work))
+
+    async def _run_segment(self, request, call=None) -> dict:
         try:
             # The budget covers the whole call; the worker thread may finish later, and
             # _close_analysis then finds the row TimedOut and drops the late answer.
-            result = await asyncio.wait_for(asyncio.to_thread(self._segment, *request), self._analysis_timeout)
+            result = await asyncio.wait_for(call(request) if call else asyncio.to_thread(self._segment, *request),
+                                            self._analysis_timeout)
             return {
                 "status": "Complete" if result.boxes else "NoMatch",
                 "output_text": result.output_text,
@@ -793,8 +828,9 @@ class SpatialRunManager:
             self._track(session_id, self._respond(session_id, lock, follow["responder"]))
 
     async def _incident_timeline(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
-        """Wakes at the wearer deadline D. A cancelled incident stays open until D + grace so a HELP
-        captured before D can still raise the alert."""
+        """Wakes at the wearer deadline D, and stays open until D + grace in every state: a HELP captured
+        before D can still raise a cancelled incident, and audio captured before an early alert may still be
+        processed. The token and the run lock are kept, and no new session starts, until then."""
         cfg = self._incident_cfg[session_id]
         deadline = await asyncio.to_thread(self._deadline_of, incident_id)
         opened = deadline - timedelta(seconds=cfg.wearer_cancel)
@@ -811,8 +847,8 @@ class SpatialRunManager:
             await asyncio.sleep(remaining)
         follow = await asyncio.to_thread(self._on_deadline, lock, session_id, incident_id)
         self._dispatch(session_id, lock, follow)
-        if follow.get("state") == CANCELLED:
-            await asyncio.sleep(cfg.grace)
+        while (remaining := (deadline + timedelta(seconds=cfg.grace) - _utcnow()).total_seconds()) > 0:
+            await asyncio.sleep(remaining)
 
     def _voice(self, lock, session_id, incident_id, template_id, listen_mode, until) -> None:
         """Queue a line for iPhone 1 if the incident is still waiting; optionally (re)open listening."""
@@ -1136,7 +1172,12 @@ class SpatialRunManager:
             if not _incident_session_ok(session):
                 return {**result, "reason": "run_ended"}, {}
             grace = timedelta(seconds=self._incident_cfg[session_id].grace)
-            decision = decide_reply(row.spatial_state, reply, row.wearer_deadline_at, grace, _utcnow(), capture_end)
+            if speech is not None and _utcnow() > row.wearer_deadline_at + grace:
+                # MVP2.md: when the grace ends, speech results still pending are blocked. They are logged with
+                # the reason and change nothing: no late OK, no update to a contact, no alert.
+                decision = ReplyDecision(reason="processed_after_grace")
+            else:
+                decision = decide_reply(row.spatial_state, reply, row.wearer_deadline_at, grace, _utcnow(), capture_end)
             follow: dict = {"deliver": []}
             if decision.alert:
                 follow |= self._alert_locked(db, session_id, row, decision.alert)
@@ -1226,7 +1267,8 @@ class SpatialRunManager:
         }
 
     def wearer_played(self, session_id: str, token: str | None, utterance_id: int,
-                      speech_start_ms: float | None = None, speech_end_ms: float | None = None) -> bool | None:
+                      speech_start_ms: float | None = None, speech_end_ms: float | None = None,
+                      timed_out: bool = False) -> bool | None:
         channel, lock = self._channel(session_id, token), self._locks.get(session_id)
         if channel is None or lock is None:
             return None
@@ -1235,8 +1277,16 @@ class SpatialRunManager:
         if speech_start_ms is not None and speech_end_ms is not None and speech_end_ms >= speech_start_ms:
             start, end = self._phone_to_utc(session_id, speech_start_ms, now), self._phone_to_utc(session_id, speech_end_ms, now)
             span = (start, end) if start and end else None
-        with lock:
-            return channel.played(utterance_id, span, now)
+        with lock, self._db() as db:
+            line = next((u for u in channel.utterances if u.id == utterance_id), None)
+            if not channel.played(utterance_id, span, now, "speech_timeout" if timed_out else None):
+                return False
+            # What the phone really said is kept as a record: M7 echo trials need to know which prompts played.
+            db.add(SpatialAction(session_id=session_id, incident_id=line.incident_id, kind="spoken", target="wearer",
+                                 created_at=now, detail=json.dumps({"template_id": line.template_id, "utterance_id": line.id,
+                                                                   "source": line.source, "timed_out": timed_out})))
+            db.commit()
+            return True
 
     def _phone_to_utc(self, session_id: str, phone_ms: float, now: datetime) -> datetime | None:
         clock = self._phone_clocks.get(session_id)
@@ -1405,7 +1455,7 @@ class SpatialRunManager:
         """Every live SAM call, advisory or incident scene, goes through one slot per session: one
         request at a time, starts at least 3 s apart. Sending the alert never waits here."""
         slot = self._sam_slots.setdefault(session_id, SamSlot())
-        return await slot.run(lambda: self._run_segment(request))
+        return await slot.run(lambda: self._run_segment(request, call=self._live_call))
 
     def _open_scene_analysis(self, lock, session_id: str, incident_id: int):
         store = self._frames.get(session_id)

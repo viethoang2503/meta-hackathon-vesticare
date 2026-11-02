@@ -56,7 +56,7 @@ function renderIncident(snap) {
   $("incident").innerHTML = `<div class="state">#${i.id} ${esc(i.state)}</div>` +
     `<p>${esc(i.decision_source)}, peak ${i.peak_svm.toFixed(1)} g${left === null ? "" : `. Wearer window: ${left} s left`}. ` +
     `${i.is_acknowledged ? "Acknowledged." : "Not acknowledged."}</p>`;
-  const rows = snap.actions.filter((a) => a.incident_id === i.id && !["self_report", "drill"].includes(a.kind)).map((a) => {
+  const rows = snap.actions.filter((a) => a.incident_id === i.id && !["self_report", "drill", "spoken"].includes(a.kind)).map((a) => {
     const d = a.detail ?? {};
     return `<li>${clock(a.created_at)} <b>${esc(a.kind)}</b> ${esc(a.target ?? "")}<span class="tag">${esc(d.status ?? "")}</span>` +
       `${d.text ? `<blockquote>${esc(d.text)}</blockquote>` : ""}</li>`;
@@ -133,4 +133,5 @@ $("pair").onclick = async () => {
   }
 };
 
-setInterval(refresh, 1000);
+// A refresh must not lose a running session: take it up again before the first poll.
+api("live/active").then((snap) => { session = snap.id; }).catch(() => {}).finally(() => setInterval(refresh, 1000));

@@ -21,14 +21,18 @@ OUT = BACKEND.parent / "docs" / "spatial" / "evidence" / "mvp2" / "s3"
 
 def to_markdown(manifest: dict, report: dict) -> str:
     a, b = report["M5a"], report["M5b"]
+    unfinished = [] if manifest.get("complete", True) else [
+        f"**Incomplete recording.** {'; '.join(manifest['incomplete_reasons'])}.", ""]
     stand_in = [] if manifest["source"] == "esp32" else [f"**Simulated: not S3 evidence.** This package came from: {manifest['source_label']}.", ""]
     return "\n".join([
-        "# S3 replay", "", *stand_in,
+        "# S3 replay", "", *stand_in, *unfinished,
         f"Package: {manifest['source_label']}, recorded {manifest['recorded_on']}, "
         f"{manifest['contents']['incidents']} incident(s), {manifest['contents']['frames']} frames. Participant consent: "
         f"publication {manifest['consent']['publication']}.", "",
         "| Check | Result | Detail |", "|---|---|---|",
         f"| M5a detector, two replays | **{a['status']}** | incidents {a['incidents']}, source start ms {a['source_start_ms']}; "
+        f"same model: {a['same_model']}, same detector config: {a['same_config']}"
+        f"{'' if a['same_config'] else ' (' + '; '.join(a['config_differences']) + ')'}; "
         f"matches the live run: {a['matches_recorded']} ({a['recorded_incidents']} recorded) |",
         f"| M5b policy, two replays | **{b['status']}** | {b['events']} recorded response events; "
         f"matches the live chain: {b['matches_recorded_chain']}; largest time difference {b['max_time_difference_ms']} ms |", "",

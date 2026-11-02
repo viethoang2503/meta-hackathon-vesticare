@@ -17,7 +17,8 @@
     #now { font-size: 20px; font-weight: 600; margin: 10px 0; }
     table { border-collapse: collapse; width: 100%; background: var(--card); border: 1px solid var(--line); }
     th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); font-size: 14px; }
-    .Pass { color: var(--ok); font-weight: 600; } .Fail { color: var(--bad); font-weight: 600; }
+    .Pass { color: var(--ok); font-weight: 600; } .Fail { color: var(--bad); font-weight: 600; } .Incomplete { color: var(--muted); font-weight: 600; }
+    select { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
   </style>
 </head>
 <body>
@@ -38,8 +39,17 @@
   <div class="row" id="buttons"></div>
   <div id="now">No session</div>
 
-  <h2>3. Results</h2>
+  <h2>3. Speaker echo trials (nobody answers)</h2>
+  <p>Does the phone hear its own voice? Pick the phone's speaker volume and the room, then press a button and stay silent. Do each button at least 3 times at each of low, mid and high. The window must be at least 30 s for the first button. Audio is not stored; transcripts are.</p>
+  <div class="row">
+    <label>Volume <select id="volume"><option value="low">low</option><option value="mid">mid</option><option value="high">high</option></select></label>
+    <label>Room <input id="room" value="living room" size="14"></label>
+  </div>
+  <div class="row" id="echo-buttons"></div>
+
+  <h2>4. Results</h2>
   <div id="report"></div>
+  <div id="echo-report"></div>
   <script type="module" src="drill.js"></script>
 </body>
 </html>

@@ -158,6 +158,49 @@ class ExportAndReplayTest(unittest.TestCase):
             self.assertEqual([e["kind"] for e in responses], ["reply", "ack"])
             self.assertIsNotNone(responses[0]["capture_end_ms"])
 
+    def test_a_session_whose_incident_has_not_finished_is_not_exported(self):
+        """Review finding 6: Stop during the countdown left a package with a state the policy had not reached."""
+        spatial_runs._live_wearer_cancel, spatial_runs._grace = 6, 3
+        with TestClient(app) as client:
+            headers = {"Authorization": "Bearer device-secret-value"}
+            sid = client.post("/api/spatial/live", json={"patient_id": 1, "device_id": "fake-esp32", "source": "fake_esp32",
+                                                         "notification_mode": "simulated"}).json()["id"]
+            table = load_scenario("S2")
+            full = np.column_stack([table.source_ms, table.samples])
+            for n, chunk in enumerate(fake_esp32.batches(full, None, 0)):
+                r = client.post("/api/sensor/batch", headers=headers, json=fake_esp32.payload(chunk, 1, "fake-esp32", "b1", n, 0)).json()
+                if r["incidents_opened"]:
+                    break
+            client.post(f"/api/spatial/sessions/{sid}/stop")
+            out = Path(self.tmp.name) / "S3"
+            with self.assertRaisesRegex(PackageRefused, "incident 0: it is still waiting for the wearer"):
+                build(sid, out, CONSENT, runs_module.LIVE_DATA_DIR)
+            self.assertFalse(out.exists())
+            manifest = build(sid, out, CONSENT, runs_module.LIVE_DATA_DIR, allow_incomplete=True)
+            self.assertEqual((manifest["complete"], len(manifest["incomplete_reasons"])), (False, 1))
+            time.sleep(11)                                     # the incident runs out its window, grace and escalation after Stop
+            self.assertTrue(build(sid, out, CONSENT, runs_module.LIVE_DATA_DIR, force=True)["complete"])
+
+    def test_a_replay_under_another_detector_config_is_not_a_pass(self):
+        """Review finding 7: stillness 2 s recorded, 5 s now. The incident count changed and the report still passed."""
+        from app.services import s3_package
+        with TestClient(app) as client:
+            sid = self.record_a_session(client)
+            out = Path(self.tmp.name) / "S3"
+            build(sid, out, CONSENT, runs_module.LIVE_DATA_DIR)
+            package = load(out)
+            self.assertEqual(run_replay(package)["M5a"]["same_config"], True)
+            saved = s3_package.FALL_STILLNESS_SECONDS
+            s3_package.FALL_STILLNESS_SECONDS = 5.0
+            try:
+                a = run_replay(package)["M5a"]
+            finally:
+                s3_package.FALL_STILLNESS_SECONDS = saved
+            self.assertEqual((a["status"], a["same_config"], a["config_differences"]),
+                             ("Fail", False, ["stillness.seconds: recorded 2.0, now 5.0"]))
+            del package["manifest"]["config"]["detector"]          # a package that does not say what it ran with
+            self.assertEqual(run_replay(package)["M5a"]["status"], "Fail")
+
     def test_a_replay_with_another_model_than_the_recording_is_not_a_pass(self):
         with TestClient(app) as client:
             sid = self.record_a_session(client)

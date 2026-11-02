@@ -99,4 +99,10 @@ async function refresh() {
     $("now").textContent = e.message;
   }
 }
-setInterval(refresh, 1000);
+// After a refresh, take the running camera session up again instead of leaving Start blocked by a 409.
+api("live/active").then((snap) => {
+  if (snap.live?.config?.source !== "camera_trial") return;
+  session = snap.id;
+  $("begin").disabled = true;
+  setControls();
+}).catch(() => {}).finally(() => setInterval(refresh, 1000));

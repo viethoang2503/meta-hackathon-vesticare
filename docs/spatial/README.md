@@ -1,6 +1,6 @@
 # Vesti-Care Spatial
 
-Bộ tài liệu MVP 1 và MVP 2. Trạng thái và bằng chứng MVP 1 nằm ở [ACCEPTANCE.md](ACCEPTANCE.md); phạm vi MVP 2 đã chốt ở [MVP2.md](MVP2.md), chưa phải báo cáo triển khai.
+Bộ tài liệu MVP 1 và MVP 2. Trạng thái và bằng chứng MVP 1 nằm ở [ACCEPTANCE.md](ACCEPTANCE.md). Trạng thái MVP 2 nằm ở [ACCEPTANCE_MVP2.md](ACCEPTANCE_MVP2.md): phần code đã xong và đã thử bằng dữ liệu giả lập, phần cần phần cứng và người thật chưa chạy.
 
 Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1, agent Muse Spark và một căn nhà 3D có nội thất. Camera cho biết phía trước có gì nguy hiểm; IMU cho biết người đeo có ngã thật hay không. Người đeo nhận lời nhắc và phản hồi qua HUD kính mô phỏng. Người chăm sóc chọn sự kiện trong nhà để xem bằng chứng và xử lý cảnh báo.
 
@@ -28,6 +28,8 @@ Vesti-Care Spatial kết hợp phát hiện ngã bằng IMU, camera có SAM 3.1,
 - [ACCEPTANCE.md](ACCEPTANCE.md) là bảng nghiệm thu AC01 đến AC12, T1 đến T12 và các số đo đã công bố.
 - [CREDITS.md](CREDITS.md) ghi nguồn và giấy phép của thư viện, model, dữ liệu và asset.
 - [MVP2.md](MVP2.md) là đặc tả MVP 2: người thật, thiết bị thật.
+- [ACCEPTANCE_MVP2.md](ACCEPTANCE_MVP2.md), [SUBMISSION_MVP2.md](SUBMISSION_MVP2.md) và [DEMO_MVP2.md](DEMO_MVP2.md) là bảng nghiệm thu, mô tả dự thi và walkthrough của MVP 2.
+- [MVP2_TODO_NGUOI_LAM.md](MVP2_TODO_NGUOI_LAM.md) liệt kê việc chỉ người làm dự án làm được.
 - [MVP2_ARCHITECTURE.md](MVP2_ARCHITECTURE.md) là kiến trúc MVP 2: phiên sống, kênh người đeo, Telegram, agent giải thích và trấn an.
 - [MVP2_PLAN.md](MVP2_PLAN.md) là thứ tự làm, lịch và cách cắt khi chậm của MVP 2.
 

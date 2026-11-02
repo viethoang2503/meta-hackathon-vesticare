@@ -74,7 +74,10 @@ def analyse(table: np.ndarray, stats: dict, incidents: list[dict], segments: dic
     rows["acquisition"] = {
         "rate_hz": round(float(rate), 2), "p95_interval_ms": round(p95, 1),
         "max_interval_ms": float(intervals.max()) if len(intervals) else None,
-        "dropped_at_source": int(stats.get("dropped_at_source", 0)), "acquired": acquired,
+        # The device's drop counter runs from boot. Only the drops since this session's first batch belong to it;
+        # a session without that baseline (recorded before it was kept) falls back to the raw counter and says so.
+        "dropped_at_source": int(stats.get("dropped_in_session", stats.get("dropped_at_source", 0))),
+        "drop_baseline_known": "dropped_in_session" in stats, "acquired": acquired,
         "pass": bool(49 <= rate <= 51 and p95 <= 30),
     }
 
@@ -85,7 +88,9 @@ def analyse(table: np.ndarray, stats: dict, incidents: list[dict], segments: dic
         "lost": transport_lost, "of_acquired_kept": kept,
         "lost_fraction": round(transport_lost / kept, 4) if kept else None,
         "duplicates": int(stats.get("duplicates", 0)), "rejected_batches": int(stats.get("rejected_batches", 0)),
-        "pass": bool(kept and transport_lost / kept < 0.01),
+        # Without the session's drop baseline the loss cannot be told apart from drops before the session.
+        "drop_baseline_known": rows["acquisition"]["drop_baseline_known"],
+        "pass": bool(kept and transport_lost / kept < 0.01 and rows["acquisition"]["drop_baseline_known"]),
     }
 
     coverage = stats.get("coverage")
@@ -149,7 +154,7 @@ def to_markdown(session_id: str, report: dict) -> str:
         f"| Acquisition | {a['rate_hz']} Hz, p95 {a['p95_interval_ms']} ms, max {a['max_interval_ms']} ms, "
         f"{a['dropped_at_source']} dropped at source | 49–51 Hz, p95 ≤ 30 ms | {a['pass']} |",
         f"| Transport | {t['lost']} of {t['of_acquired_kept']} lost, {t['duplicates']} duplicates, "
-        f"{t['rejected_batches']} rejected batches | < 1% | {t['pass']} |",
+        f"{t['rejected_batches']} rejected batches{'' if t['drop_baseline_known'] else ', drop baseline unknown'} | < 1% | {t['pass']} |",
         f"| Detector coverage | {c['coverage']}, {c['unavailable_ms']} ms unavailable, resets {c['resets_by_reason']} | ≥ 95% | {c['pass']} |",
         f"| Range | {g['clipped_samples']} clipped, peak {g['peak_svm_g']} g, falls {g['fall_peak_svm_g']} | no clipping | {g['pass']} |",
     ]

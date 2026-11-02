@@ -94,3 +94,15 @@ def test_coverage_follows_the_spec_formula():
     assert c["denominator_ms"] == 21980 - 2000
     assert c["unavailable_ms"] == (13980 - 9980)
     assert c["coverage"] == round((19980 - 4000) / 19980, 4)
+
+
+def test_drops_before_the_first_batch_are_not_the_sessions():
+    from app.services.live_stream import DeviceSample, LiveStream
+    import numpy as np
+    stream = LiveStream("b1")
+    v = np.zeros(7, dtype=np.float32)
+    stream.accept("b1", [DeviceSample(1, 1000, v)], dropped_at_source=1000)
+    stream.accept("b1", [DeviceSample(2, 1020, v)], dropped_at_source=1000)
+    stream.accept("b1", [DeviceSample(5, 1100, v)], dropped_at_source=1002)
+    stats = stream.stats()
+    assert (stats["dropped_at_source"], stats["dropped_in_session"]) == (1002, 2)

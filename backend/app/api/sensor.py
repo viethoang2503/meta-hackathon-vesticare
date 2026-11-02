@@ -337,6 +337,9 @@ def ingest_sensor_data(
     db: Session = Depends(get_db),
     _: None = Depends(verify_device_token),
 ):
+    if spatial_runs.live_session_for(payload.patient_id) is not None:
+        # The MVP 1 route has its own detector and alert path. It must not run beside a live session's policy.
+        raise HTTPException(status_code=409, detail="A live session owns this patient's samples; stream them to /api/sensor/batch")
     t_received = datetime.now(timezone.utc)
     timestamp = _ensure_timestamp(payload.timestamp)
     svm = _ensure_svm(payload.ax, payload.ay, payload.az, payload.svm)

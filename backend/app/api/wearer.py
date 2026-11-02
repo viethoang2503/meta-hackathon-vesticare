@@ -24,6 +24,8 @@ class Played(BaseModel):
     utterance_id: int = Field(ge=1)
     speech_start: float | None = None  # phone performance.now() ms
     speech_end: float | None = None
+    # The phone never heard the speech end and cut it off. The span is then its best bound on when it was talking.
+    timed_out: bool = False
 
 
 class Status(BaseModel):
@@ -68,7 +70,7 @@ def poll(session_id: str, after: int = 0, x_wearer_token: str | None = Header(de
 @router.post("/played")
 def played(session_id: str, body: Played, x_wearer_token: str | None = Header(default=None)):
     return {"recorded": _ok(spatial_runs.wearer_played(session_id, x_wearer_token, body.utterance_id,
-                                                       body.speech_start, body.speech_end))}
+                                                       body.speech_start, body.speech_end, body.timed_out))}
 
 
 @router.post("/status")

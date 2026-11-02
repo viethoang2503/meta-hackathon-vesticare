@@ -140,6 +140,15 @@ async def start_session(body: StartRequest):
     return _snapshot_or_404(session_id)
 
 
+@router.get("/live/active", response_model=SessionSnapshot)
+def active_live():
+    """The live session that is running now. A laptop page calls this after a refresh to pick it up again."""
+    session_id = spatial_runs.active_live_session()
+    if session_id is None:
+        raise HTTPException(status_code=404, detail="No live session is running")
+    return _snapshot_or_404(session_id)
+
+
 @router.post("/live", response_model=SessionSnapshot, status_code=201)
 async def start_live(body: StartLiveRequest):
     try:
@@ -157,14 +166,17 @@ async def start_live(body: StartLiveRequest):
 
 
 class DrillRequest(BaseModel):
-    expected: Literal["ok", "help", "ambiguous", "silence", "loudspeaker"]
+    expected: Literal["ok", "help", "ambiguous", "silence", "loudspeaker", "echo_prompts", "echo_cancel"]
     person: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9 _.-]+$")
+    # Echo trials only: how loud the phone's speaker was and where it was.
+    volume: Literal["low", "mid", "high"] | None = None
+    room: str | None = Field(default=None, max_length=60, pattern=r"^[A-Za-z0-9 _.,'-]+$")
 
 
 @router.post("/sessions/{session_id}/drill", status_code=201)
 async def open_drill(session_id: str, body: DrillRequest) -> dict:
     try:
-        return await spatial_runs.open_drill(session_id, body.expected, body.person)
+        return await spatial_runs.open_drill(session_id, body.expected, body.person, body.volume, body.room)
     except DrillRefused as refused:
         status = {"busy": 409, "run_ended": 404}.get(refused.reason, 422)
         raise HTTPException(status_code=status, detail=refused.reason)

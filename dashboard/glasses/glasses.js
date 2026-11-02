@@ -2,7 +2,7 @@
 // backend queues, waits a guard so its own voice is not recorded, and records fixed turns while
 // the backend says to listen. It never cuts a turn to speak and never extends a deadline: the
 // backend decides everything; this page only plays, records and reports.
-import { recordUntil, turnLength } from "./turn.js";
+import { recordUntil, speakLine, turnLength } from "./turn.js";
 
 const params = new URLSearchParams(location.hash.slice(1));
 const session = params.get("s");
@@ -11,6 +11,7 @@ const api = `/api/wearer/${session}`;
 const POLL_MS = 300;
 const GUARD_MS = 500;
 const MIN_TURN_MS = 300;
+const DEADLINE_MARGIN_MS = 250;
 const CLOCK_ROUNDS = 5;
 const CLOCK_RESYNC_MS = 60000;
 const TTS_TIMEOUT_MS = 15000;
@@ -24,6 +25,7 @@ let stream = null;
 let mime = "";
 let lastUtterance = 0;
 let lastClockSync = -Infinity;
+let backendUncertainty = 0;
 let backendOffset = null;  // backend monotonic ms = phone performance.now() + backendOffset
 
 const paired = (async () => {
@@ -68,21 +70,16 @@ async function syncClock() {
   }
   const mapping = await call("clock/report", { body: { rounds } });
   backendOffset = mapping.offset_ms;
+  backendUncertainty = mapping.uncertainty_ms;
   lastClockSync = performance.now();
   log(`clock synced, ±${mapping.uncertainty_ms} ms`);
 }
 
 function speak(text) {
-  return new Promise((resolve) => {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US";
-    let start = null;
-    const timer = setTimeout(() => resolve(null), TTS_TIMEOUT_MS);
-    u.onstart = () => { start = performance.now(); };
-    u.onend = () => { clearTimeout(timer); resolve({ start: start ?? performance.now(), end: performance.now() }); };
-    u.onerror = () => { clearTimeout(timer); resolve(null); };
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
+  return speakLine(text, {
+    synth: speechSynthesis,
+    makeUtterance: (t) => Object.assign(new SpeechSynthesisUtterance(t), { lang: "en-US" }),
+    now: () => performance.now(), setTimer: setTimeout, clearTimer: clearTimeout, timeoutMs: TTS_TIMEOUT_MS,
   });
 }
 
@@ -101,8 +98,10 @@ async function play(u) {
     log(`could not speak "${u.text}"`);  // not reported as played
     return;
   }
+  if (spoken.timedOut) log(`speech did not end, cut off: "${u.text}"`);
   await sleep(GUARD_MS);
-  await call("played", { body: { utterance_id: u.id, speech_start: spoken.start, speech_end: spoken.end } });
+  await call("played", { body: { utterance_id: u.id, speech_start: spoken.start, speech_end: spoken.end,
+                                 timed_out: spoken.timedOut } });
   log(`said "${u.text}"`);
 }
 
@@ -140,7 +139,7 @@ async function loop() {
       }
       const listen = state.listen;
       const decidedAt = performance.now();
-      const length = turnLength(listen, backendOffset, decidedAt, MIN_TURN_MS);
+      const length = turnLength(listen, backendOffset, decidedAt, MIN_TURN_MS, 300, DEADLINE_MARGIN_MS + backendUncertainty);
       if (length > 0) {
         show(listen.mode === "help_only" ? "Listening for help" : "Listening", `${Math.ceil(length / 1000)} s turn`);
         const turn = await recordTurn(decidedAt + length);

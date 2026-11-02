@@ -6,6 +6,11 @@ const TRIALS = [
   ["silence", "Stay silent"],
   ["loudspeaker", "TV or speaker talking, nobody answers"],
 ];
+const ECHO = [
+  ["echo_prompts", "Echo: prompts, nobody answers"],
+  ["echo_cancel", "Echo: after OK, nobody answers"],
+];
+const PROMPTS = ["ask_ok", "ask_ok_10", "ask_ok_20", "cancel_confirmed"];
 const $ = (id) => document.getElementById(id);
 let session = null;
 
@@ -17,7 +22,30 @@ async function api(path, options = {}) {
 }
 
 function setButtons(enabled) {
-  for (const b of $("buttons").children) b.disabled = !enabled;
+  for (const b of [...$("buttons").children, ...$("echo-buttons").children]) b.disabled = !enabled;
+}
+
+for (const [expected, label] of ECHO) {
+  const button = document.createElement("button");
+  button.textContent = label;
+  button.disabled = true;
+  button.onclick = async () => {
+    try {
+      const opened = await api(`sessions/${session}/drill`, { method: "POST", body: JSON.stringify({
+        expected, person: $("person").value.trim(), volume: $("volume").value, room: $("room").value.trim() }) });
+      if (expected === "echo_cancel") {
+        // The laptop plays the part of the person who said OK, so nobody speaks into the phone.
+        await new Promise((r) => setTimeout(r, 1500));
+        await api(`incidents/${opened.incident_id}/wearer-response`, { method: "POST", body: JSON.stringify({ response: "ok" }) });
+      }
+    } catch (e) {
+      const text = { busy: "The last trial is still running; wait for it to finish.",
+                     window_too_short: "Start a new drill session with a window of at least 30 s for this button.",
+                     room_required: "Type the room first." }[e.message];
+      $("now").textContent = text ?? e.message;
+    }
+  };
+  $("echo-buttons").append(button);
 }
 
 for (const [expected, label] of TRIALS) {
@@ -73,6 +101,24 @@ function renderReport(report) {
   $("report").innerHTML = html || "<p>No trials yet.</p>";
 }
 
+function renderEcho(echo) {
+  const trials = Object.values(echo.cells).flatMap((v) => Object.values(v)).reduce((n, c) => n + c.plays, 0);
+  if (!trials && !echo.pending_trials && !echo.invalid_trials) {
+    $("echo-report").innerHTML = "";
+    return;
+  }
+  const rows = ["low", "mid", "high"].map((volume) => row([volume, ...PROMPTS.map((p) => {
+    const c = echo.cells[volume][p];
+    return `${c.plays} plays, ${c.false_cancel} false cancel, ${c.false_help} false HELP <span class="${c.status}">${c.status}</span>`;
+  })]));
+  $("echo-report").innerHTML = `<h2>Speaker echo <span class="${echo.status}">${echo.status}</span></h2>` +
+    `<table>${row(["Volume", ...PROMPTS], "th")}${rows.join("")}</table>` +
+    `<p>Each cell needs 3 plays and no false cancel or false HELP. Guard ${echo.guard_ms} ms. Rooms: ` +
+    `${Object.entries(echo.rooms).map(([v, r]) => `${v}: ${r.join(", ") || "none"}`).join("; ")}. ` +
+    `${echo.pending_trials} running, ${echo.invalid_trials} invalid, ${echo.unattributed_false_events} false events not traced to a prompt. ` +
+    `${echo.stored}.</p>`;
+}
+
 async function refresh() {
   if (!session) return;
   try {
@@ -83,9 +129,18 @@ async function refresh() {
     $("now").textContent = open
       ? `Trial ${open.id}: ${open.state}. Phone: ${state}.${heard ? ` Last heard: “${heard}”.` : ""}`
       : `Ready. Phone: ${state}.`;
-    renderReport(await api(`sessions/${session}/drill-report`));
+    const report = await api(`sessions/${session}/drill-report`);
+    renderReport(report);
+    renderEcho(report.echo);
   } catch (e) {
     $("now").textContent = e.message;
   }
 }
-setInterval(refresh, 1000);
+// After a refresh, take the running drill session up again instead of leaving Start blocked by a 409.
+api("live/active").then((snap) => {
+  if (snap.live?.config?.source !== "drill") return;
+  session = snap.id;
+  $("begin").disabled = true;
+  $("end").disabled = false;
+  setButtons(true);
+}).catch(() => {}).finally(() => setInterval(refresh, 1000));
