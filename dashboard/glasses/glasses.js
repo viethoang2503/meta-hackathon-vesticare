@@ -14,6 +14,8 @@ const MIN_TURN_MS = 300;
 const CLOCK_ROUNDS = 5;
 const CLOCK_RESYNC_MS = 60000;
 const TTS_TIMEOUT_MS = 15000;
+const FRAME_MS = 1000;
+const FRAME_QUALITY = 0.7;
 const MIMES = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
 
 const $ = (id) => document.getElementById(id);
@@ -100,6 +102,27 @@ async function play(u) {
   log(`said "${u.text}"`);
 }
 
+async function sendFrames() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 640;
+  canvas.height = 480;
+  const video = $("cam");
+  for (;;) {
+    const started = performance.now();
+    try {
+      if (video.readyState >= 2) {
+        const captured = performance.now();
+        canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
+        const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", FRAME_QUALITY));
+        await call("frame", { body: blob, type: "image/jpeg", query: `?capture=${captured}` });
+      }
+    } catch (e) {
+      log(`frame not sent: ${e.message || e}`);
+    }
+    await sleep(Math.max(0, FRAME_MS - (performance.now() - started)));
+  }
+}
+
 async function loop() {
   for (;;) {
     try {
@@ -153,5 +176,7 @@ $("start").onclick = async () => {
   try { await navigator.wakeLock.request("screen"); } catch { log("screen may lock: keep it on"); }
   $("start").disabled = true;
   log(`recorder ${mime || "default"}`);
+  $("cam").srcObject = new MediaStream(stream.getVideoTracks());
+  sendFrames();
   loop();
 };

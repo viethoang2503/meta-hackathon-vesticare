@@ -28,7 +28,7 @@ Không dán token, mật khẩu Wi-Fi hay link có `#t=` vào chat hoặc commit
 | 3.1 | Làm giá gắn iPhone 1 ở trán | Camera hướng ra trước, loa không bị che | U0, M3, M7 |
 | 3.2 | Thử lại U0 trên giá | Chạy tunnel, quét QR, 3 lượt "I answer" và 3 lượt "nobody answers". Ghi tiếng loa nghe rõ hay nhỏ | U0 |
 | 3.3 | Thử giọng nói M7 | Mở `http://127.0.0.1:8010/spatial/drill.html` trên laptop, nhập tên người thử, bấm "Start drill session". Chạy tunnel, rồi `backend/tools/wearer_link.py --tunnel <URL>` ra QR cho iPhone 1. Mỗi lần bấm một nút là một lượt: máy hỏi "Are you all right?", người thử làm theo nút (nói OK, nói HELP, nói câu mơ hồ, im lặng, hoặc bật TV). Mỗi người cần 10 OK, 10 HELP, 10 câu mơ hồ, 10 lượt im lặng hoặc TV; trang tự ra bảng và đếm số lần hủy nhầm (phải bằng 0). Cửa sổ drill mặc định 15 s, chỉnh được từ 10 đến 60 s | M7 |
-| 3.4 | Thử SAM ở cầu thang thật | Sau khi U6 xong. 10 lượt đủ sáng, 10 lượt thiếu sáng, 10 cảnh không có cầu thang | M3 |
+| 3.4 | Thử SAM ở cầu thang thật | U6 đã xong. Mở trang iPhone 1 như bước 3.3, bấm Start, hướng camera vào cầu thang. Máy tự gửi ảnh mỗi giây và nói "Stairs visible ahead." khi SAM thấy cầu thang. 10 lượt đủ sáng, 10 lượt thiếu sáng, 10 cảnh không có cầu thang. Bảng M3 (x/N, báo nhầm, độ trễ) cần thêm công cụ tính, báo để làm | M3 |
 
 ## 4. Người và hiện trường
 
@@ -42,4 +42,5 @@ Không dán token, mật khẩu Wi-Fi hay link có `#t=` vào chat hoặc commit
 
 ## Đã xong
 
+- U6 phần code: ảnh 1 Hz từ iPhone 1, SAM `stairs`, lời nhắc có cooldown, ảnh gần lúc ngã gắn vào incident (2026-11-02).
 - U0 phần định dạng, phát loa, thu âm và ảnh trên iPhone cầm tay (2026-10-31).

@@ -17,6 +17,7 @@ from app.services.spatial_runs import spatial_runs
 
 router = APIRouter(prefix="/api/wearer/{session_id}", tags=["Wearer"])
 MAX_AUDIO_BYTES = 2 * 1024 * 1024
+MAX_FRAME_BYTES = 1024 * 1024
 
 
 class Played(BaseModel):
@@ -86,3 +87,15 @@ async def audio(session_id: str, request: Request, incident_id: int, capture_sta
         raise HTTPException(status_code=413 if data else 422, detail="Audio missing or larger than 2 MB")
     return _ok(await spatial_runs.wearer_audio(session_id, x_wearer_token, incident_id, data, capture_start,
                                                capture_end, request.headers.get("content-type", "")))
+
+
+@router.post("/frame", status_code=202)
+async def frame(session_id: str, request: Request, capture: float | None = None,
+                x_wearer_token: str | None = Header(default=None)):
+    """One JPEG from the forehead camera; `capture` is the phone's performance.now() ms at capture."""
+    data = await request.body()
+    if not data or len(data) > MAX_FRAME_BYTES:
+        raise HTTPException(status_code=413 if data else 422, detail="Frame missing or larger than 1 MB")
+    if data[:2] != b"\xff\xd8":
+        raise HTTPException(status_code=422, detail="Frame is not a JPEG")
+    return _ok(await spatial_runs.wearer_frame(session_id, x_wearer_token, data, capture))

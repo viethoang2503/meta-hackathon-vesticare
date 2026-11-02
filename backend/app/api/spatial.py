@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from app.services.drill_report import drill_report
@@ -93,6 +93,7 @@ class SessionSnapshot(BaseModel):
     scenario: dict | None
     live: dict | None = None
     wearer: dict | None = None
+    camera: dict | None = None
     incidents: list[IncidentOut]
     actions: list[ActionOut]
     advisories: list[dict]
@@ -168,6 +169,15 @@ async def open_drill(session_id: str, body: DrillRequest) -> dict:
 @router.get("/sessions/{session_id}/drill-report")
 def drill_report_route(session_id: str) -> dict:
     return drill_report(session_id)
+
+
+@router.get("/sessions/{session_id}/frames/{frame_id}")
+def get_frame(session_id: str, frame_id: str):
+    """A live camera frame; like the rest of /api/spatial it is not reachable through the tunnel."""
+    data = spatial_runs.live_frame_jpeg(session_id, frame_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="No such frame")
+    return Response(content=data, media_type="image/jpeg")
 
 
 @router.post("/sessions/{session_id}/stop", response_model=SessionSnapshot)

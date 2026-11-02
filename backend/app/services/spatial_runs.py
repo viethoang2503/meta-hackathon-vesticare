@@ -78,6 +78,7 @@ from app.services.incident_policy import ALERTED, CANCELLED, decide_deadline, de
 from app.services.notifier import SimulatedNotifier
 from app.services.notify_templates import render
 from app.services.speech import SpeechJob, SpeechWorker, whisper_model
+from app.services.live_frames import STAIRS_PROMPT, Frame, FrameStore, StairsGate, scene_status
 from app.services.wearer_channel import TURN_MS, WearerChannel
 from app.services.wearer_reply import classify_reply
 from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
@@ -281,6 +282,8 @@ class SpatialRunManager:
         self._incident_tasks: dict[str, set[asyncio.Task]] = {}
         self._incident_cfg: dict[str, IncidentConfig] = {}
         self._channels: dict[str, WearerChannel] = {}
+        self._frames: dict[str, FrameStore] = {}
+        self._stairs: dict[str, StairsGate] = {}
         # Acks outlive the run's registry: a contact may tap long after the last task ended.
         self._idle_lock = threading.Lock()
         self._phone_clocks: dict[str, dict] = {}
@@ -429,6 +432,7 @@ class SpatialRunManager:
         self._incident_cfg[session_id] = IncidentConfig(wearer_cancel, self._caregiver_ack, self._grace)
         self._session_notifiers[session_id] = notifier
         self._channels[session_id] = WearerChannel()
+        self._frames[session_id], self._stairs[session_id] = FrameStore(), StairsGate()
         self._live[session_id] = LiveRun(
             patient_id=patient_id, device_id=device_id, wearer_cancel=wearer_cancel, drill=drill,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
@@ -553,6 +557,7 @@ class SpatialRunManager:
         _hint(session_id, "incident" if opened else "progress")
         for incident_id in opened:
             self._loop.call_soon_threadsafe(self._track, session_id, self._incident_timeline(session_id, lock, incident_id))
+            self._loop.call_soon_threadsafe(self._track, session_id, self._live_scene(session_id, lock, incident_id))
         return {"session_id": session_id, "accepted": len(steps), "rejected": rejected,
                 "readiness": stats["readiness"], "incidents_opened": opened}
 
@@ -763,7 +768,7 @@ class SpatialRunManager:
         if session_id in self._runs or self._incident_tasks.get(session_id):
             return
         for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg,
-                         self._session_notifiers, self._channels, self._phone_clocks):
+                         self._session_notifiers, self._channels, self._phone_clocks, self._frames, self._stairs):
             registry.pop(session_id, None)
 
     def _dispatch(self, session_id: str, lock: threading.Lock, follow: dict) -> None:
@@ -1165,6 +1170,9 @@ class SpatialRunManager:
                 if incident_id not in rows:
                     rows[incident_id] = db.get(AlertEvent, incident_id)
                 return rows[incident_id]
+            if db.query(AlertEvent).filter(AlertEvent.session_id == session_id, AlertEvent.spatial_state.in_(
+                    ("awaiting_wearer", "cancelled_by_wearer"))).first() is not None:
+                channel.drop_advisories("incident open")
             pending = channel.pending(after, lambda i: row(i).spatial_state, lambda i: row(i).wearer_deadline_at, now)
             listen = channel.listening_for(now)
             until_mono_ms = None if listen is None else \
@@ -1249,6 +1257,120 @@ class SpatialRunManager:
         return {"queued": True, "pushed_out_older_turn": dropped is not None, "queue_depth": self._speech.depth,
                 "capture_time": "confirmed" if capture_end else capture_problem}
 
+    # --- Camera (docs/spatial/MVP2.md, "Camera và SAM") --------------------------------------
+
+    def _frame_source_ms(self, session_id: str, phone_ms: float) -> tuple[float | None, float | None]:
+        """A phone capture time on the IMU's source clock with its uncertainty, or (None, None) while
+        the phone or the device clock is unsynchronized."""
+        phone, run = self._phone_clocks.get(session_id), self._live.get(session_id)
+        if phone is None or run is None or run.stream is None or run.stream.origin_ms is None:
+            return None, None
+        device = self._clocks.get((run.device_id, run.stream.boot_id))
+        if device is None:
+            return None, None
+        source = phone_ms + phone["offset_ms"] - device["offset_ms"] - run.stream.origin_ms
+        return source, phone["uncertainty_ms"] + device["uncertainty_ms"]
+
+    async def wearer_frame(self, session_id: str, token: str | None, data: bytes, capture_ms: float | None) -> dict | None:
+        channel = self._channel(session_id, token)
+        store, gate, lock = self._frames.get(session_id), self._stairs.get(session_id), self._locks.get(session_id)
+        if channel is None or store is None or gate is None or lock is None:
+            return None
+        source_ms, uncertainty = (None, None) if capture_ms is None else self._frame_source_ms(session_id, capture_ms)
+        frame = Frame(store.received + 1, _utcnow(), time.monotonic(), source_ms, uncertainty, data)
+        store.add(frame)
+        gate.offer(frame)
+        job = gate.take(frame.received_mono)
+        if job is not None:
+            self._background(self._stairs_job(session_id, lock, job))
+        return {"frame_id": frame.id, "clock": "synchronized" if source_ms is not None else "unsynchronized"}
+
+    async def _stairs_job(self, session_id: str, lock: threading.Lock, frame: Frame) -> None:
+        """SAM on one frame for the spoken advisory. The result is stored whatever it is."""
+        gate = self._stairs.get(session_id)
+        try:
+            analysis_id = await asyncio.to_thread(self._open_stairs_analysis, lock, session_id, frame)
+            if analysis_id is None:
+                return
+            outcome = await self._run_segment((frame.data, "image/jpeg", STAIRS_PROMPT))
+            await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
+            if outcome["status"] == "Complete":
+                await asyncio.to_thread(self._announce_stairs, lock, session_id, frame)
+        except Exception:
+            logger.exception("stairs analysis failed for session %s", session_id)
+        finally:
+            if gate is not None:
+                gate.done()
+
+    def _open_stairs_analysis(self, lock, session_id: str, frame: Frame) -> int | None:
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            if session is None or session.status != "Running":
+                return None
+            analysis = SpatialAnalysis(session_id=session_id, kind="sam_advisory", status="Running", prompt=STAIRS_PROMPT,
+                                       frame_id=frame.id, created_at=_utcnow())
+            db.add(analysis)
+            db.commit()
+            return analysis.id
+
+    def _announce_stairs(self, lock, session_id: str, frame: Frame) -> None:
+        channel, gate = self._channels.get(session_id), self._stairs.get(session_id)
+        if channel is None or gate is None:
+            return
+        with lock, self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            if session is None or session.status != "Running":
+                return
+            open_incident = db.query(AlertEvent).filter(
+                AlertEvent.session_id == session_id,
+                AlertEvent.spatial_state.in_(("awaiting_wearer", "cancelled_by_wearer"))).first() is not None
+            if not gate.may_announce(frame, time.monotonic(), open_incident):
+                return
+            channel.say("stairs_visible", None, _utcnow())
+        _hint(session_id, "wearer")
+
+    async def _live_scene(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
+        """The frame nearest the fall and SAM's reading of it, stored as the incident's scene evidence."""
+        analysis_id, request = await asyncio.to_thread(self._open_scene_analysis, lock, session_id, incident_id)
+        if request is not None:
+            await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, await self._run_segment(request))
+
+    def _open_scene_analysis(self, lock, session_id: str, incident_id: int):
+        store = self._frames.get(session_id)
+        if store is None:
+            return None, None
+        with lock, self._db() as db:
+            row = db.get(AlertEvent, incident_id)
+            match = store.match(row.source_start_ms)
+            analysis = SpatialAnalysis(session_id=session_id, incident_id=incident_id, kind="sam", status="Running",
+                                       prompt=STAIRS_PROMPT, camera_status=match.status,
+                                       frame_id=match.frame.id if match.frame else None, created_at=_utcnow())
+            request = None
+            if match.frame is not None:
+                folder = _journal_path(session_id, self._live_data_dir).parent / "frames"
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / f"{match.frame.id}.jpg").write_bytes(match.frame.data)
+            if match.status == "Available":
+                request = (match.frame.data, "image/jpeg", STAIRS_PROMPT)
+            else:
+                analysis.status, analysis.reason, analysis.finished_at = "Unavailable", match.reason, _utcnow()
+            db.add(analysis)
+            db.commit()
+            analysis_id = analysis.id
+        _hint(session_id, "analysis")
+        return analysis_id, request
+
+    def live_frame_jpeg(self, session_id: str, frame_id: str) -> bytes | None:
+        """A frame still in memory, else one saved as an incident's evidence."""
+        store = self._frames.get(session_id)
+        frame = store.get(frame_id) if store else None
+        if frame is not None:
+            return frame.data
+        if not re.fullmatch(r"live-\d+", frame_id):
+            return None
+        path = _journal_path(session_id, self._live_data_dir).parent / "frames" / f"{frame_id}.jpg"
+        return path.read_bytes() if path.is_file() else None
+
     async def _speech_done(self, job: SpeechJob, result: dict) -> None:
         meta, session_id = job.meta, job.meta["session_id"]
         channel = self._channels.get(session_id)
@@ -1330,6 +1452,16 @@ def _channel_snapshot(manager, session_id: str) -> dict | None:
     if channel is None:
         return None
     return {**channel.snapshot(_utcnow()), "token": channel.token}
+
+
+def _camera_snapshot(manager, session_id: str) -> dict | None:
+    store = manager._frames.get(session_id)
+    if store is None:
+        return None
+    latest = store.latest()
+    return {"frames_received": store.received, "latest_frame_id": latest.id if latest else None,
+            "last_frame_age_s": None if latest is None else round(time.monotonic() - latest.received_mono, 1),
+            "clock": None if latest is None else "synchronized" if latest.source_ms is not None else "unsynchronized"}
 
 
 def _live_json(s) -> dict:
@@ -1456,6 +1588,7 @@ def session_snapshot(session_id: str, session_factory=None, manager=None) -> dic
             "scenario": None if live else {k: scenario_meta[k] for k in ("id", "title", "duration_ms", "home", "location", "route")},
             "live": _live_json(s) if live else None,
             "wearer": _channel_snapshot(manager or spatial_runs, s.id),
+            "camera": _camera_snapshot(manager or spatial_runs, s.id),
             "incidents": [
                 {
                     "id": i.id,

@@ -90,6 +90,11 @@ class WearerChannel:
         self.utterances.append(u)
         return u
 
+    def drop_advisories(self, reason: str) -> None:
+        for u in self.utterances:
+            if u.status == "queued" and u.template_id == "stairs_visible":
+                u.status, u.reason = "dropped", reason
+
     def pending(self, after: int, state_of, deadline_of, now: datetime) -> list[Utterance]:
         """Queued lines after `after`, minus those that no longer fit their incident's state or
         whose deadline passed. `state_of(incident_id)` and `deadline_of(incident_id)` read the policy."""

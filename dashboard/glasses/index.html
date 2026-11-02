@@ -13,6 +13,7 @@
     button { font: inherit; padding: 14px 20px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; }
     button:disabled { opacity: .45; }
     #state { font-size: 22px; font-weight: 600; margin: 14px 0 4px; }
+    video { width: 120px; height: 90px; background: #000; border-radius: 8px; object-fit: cover; margin-top: 8px; }
     ul { padding-left: 18px; color: var(--muted); font-size: 14px; }
     .bad { color: var(--bad); } .good { color: var(--ok); }
   </style>
@@ -24,6 +25,7 @@
   <button id="start">Start</button>
   <div id="state">Not started</div>
   <p id="detail"></p>
+  <video id="cam" playsinline muted autoplay></video>
   <ul id="log"></ul>
   <script type="module" src="glasses.js"></script>
 </body>

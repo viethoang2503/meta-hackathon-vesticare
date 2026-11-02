@@ -71,6 +71,11 @@ class LiveStream:
     _first_ready_ms: int | None = None
     _last_source_ms: int | None = None
 
+    @property
+    def origin_ms(self) -> int | None:
+        """Device millis() of the first sample: source time 0."""
+        return self._origin_ms
+
     def accept(self, boot_id: str, samples: list[DeviceSample], dropped_at_source: int = 0) -> list[Step]:
         """Steps for the samples not seen before, in order. Raises BatchRejected and accepts nothing
         for another boot or for a batch whose order cannot be trusted."""

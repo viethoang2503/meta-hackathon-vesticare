@@ -149,6 +149,7 @@ class SpatialAnalysis(Base):
     reason = Column(Text, nullable=True)
     prompt = Column(String, nullable=True)
     frame_id = Column(String, nullable=True)
+    camera_status = Column(String, nullable=True)  # live: Available | Unavailable | Unsynchronized
     model = Column(String, nullable=True)
     output_text = Column(Text, nullable=True)  # raw SAM output; masks are decoded from it
     boxes = Column(Text, nullable=True)  # JSON list
