@@ -3,7 +3,7 @@
     .verify/venv/bin/python backend/tools/wearer_link.py --tunnel https://<name>.trycloudflare.com [SESSION_ID]
 
 Without SESSION_ID it uses the running live session. Writes the PNG to the scratch path it
-prints and opens it. The link carries the session's wearer token: do not share it.
+prints and opens it. The link carries a single-use pairing code that expires after 10 minutes: do not share it.
 """
 
 import argparse
@@ -33,11 +33,11 @@ def main() -> int:
             print("No running live session")
             return 1
         session = live.id
-    wearer = httpx.get(f"{args.base}/api/spatial/sessions/{session}").json().get("wearer")
-    if not wearer:
+    reply = httpx.post(f"{args.base}/api/spatial/sessions/{session}/pairing")
+    if reply.status_code != 200:
         print(f"Session {session} has no wearer channel (not a running live session)")
         return 1
-    url = f"{args.tunnel.rstrip('/')}/glasses/index.html#s={session}&t={wearer['token']}"
+    url = f"{args.tunnel.rstrip('/')}/glasses/index.html#s={session}&p={reply.json()['code']}"
     out = Path(tempfile.gettempdir()) / f"wearer_{session[:8]}.png"
     qrcode.make(url, box_size=12).save(out)
     subprocess.run(["open", str(out)], check=False)

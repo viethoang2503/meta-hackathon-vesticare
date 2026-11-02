@@ -6,7 +6,7 @@ import { recordUntil, turnLength } from "./turn.js";
 
 const params = new URLSearchParams(location.hash.slice(1));
 const session = params.get("s");
-const token = params.get("t");
+let token = null;  // exchanged from the single-use code in the link; never kept in the address bar
 const api = `/api/wearer/${session}`;
 const POLL_MS = 300;
 const GUARD_MS = 500;
@@ -25,6 +25,17 @@ let mime = "";
 let lastUtterance = 0;
 let lastClockSync = -Infinity;
 let backendOffset = null;  // backend monotonic ms = phone performance.now() + backendOffset
+
+const paired = (async () => {
+  const code = params.get("p");
+  if (!session || !code) return;
+  history.replaceState(null, "", `${location.pathname}#s=${session}`);
+  try {
+    const res = await fetch(`${api}/pair`, { method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify({ code }) });
+    if (res.ok) token = (await res.json()).token;
+  } catch { /* shown when Start is pressed */ }
+})();
 
 function show(state, detail = "", cls = "") {
   $("state").textContent = state;
@@ -154,8 +165,9 @@ async function loop() {
 }
 
 $("start").onclick = async () => {
+  await paired;
   if (!session || !token) {
-    show("Missing link", "Open the link from the laptop: it ends with #s=…&t=…", "bad");
+    show("Link not usable", "Scan a new QR from the laptop: each pairing link works once and for ten minutes.", "bad");
     return;
   }
   try {

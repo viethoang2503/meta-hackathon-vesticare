@@ -23,6 +23,8 @@ TURN_MS = 4000
 GUARD_MS = 500
 # The phone is silent while it records a turn, so offline means quiet for longer than a turn
 # plus the spec's 3 s. Found in the first live run, which reported a recording phone as offline.
+PAIRING_TTL = timedelta(minutes=10)
+PAIRING_MAX_WRONG = 5
 PHONE_OFFLINE_SECONDS = TURN_MS / 1000 + 3
 DEGRADED_SECONDS = 30
 REMINDERS = ("ask_ok_10", "ask_ok_20")
@@ -64,6 +66,25 @@ class WearerChannel:
     # guard). A turn counts only inside a grant and outside every quiet span.
     grants: dict[int, datetime] = field(default_factory=dict)
     quiet: list[tuple[datetime, datetime]] = field(default_factory=list)
+    # The link on the QR carries a short-lived single-use code, not the token: a screenshot of the QR
+    # stops working once the phone has used it or ten minutes have passed.
+    pairing_code: str | None = None
+    pairing_expires: datetime | None = None
+    pairing_wrong: int = 0
+
+    def new_pairing(self, now: datetime) -> tuple[str, datetime]:
+        self.pairing_code, self.pairing_expires, self.pairing_wrong = secrets.token_urlsafe(9), now + PAIRING_TTL, 0
+        return self.pairing_code, self.pairing_expires
+
+    def redeem(self, code: str | None, now: datetime) -> str | None:
+        """The token for a valid, unused, unexpired code, else None. Five wrong codes lock the current one."""
+        if self.pairing_code is None or self.pairing_wrong >= PAIRING_MAX_WRONG or now >= self.pairing_expires:
+            return None
+        if not code or not secrets.compare_digest(code, self.pairing_code):
+            self.pairing_wrong += 1
+            return None
+        self.pairing_code = None
+        return self.token
 
     def grant(self, incident_id: int, mode: str, until: datetime, now: datetime) -> None:
         self.listen = Listen(incident_id, mode, until)

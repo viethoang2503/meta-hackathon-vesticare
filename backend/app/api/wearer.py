@@ -41,10 +41,23 @@ class ClockReport(BaseModel):
     rounds: list[ClockRound] = Field(min_length=1, max_length=20)
 
 
+class Pairing(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
 def _ok(value):
     if value is None:
         raise HTTPException(status_code=401, detail="Unknown live session or wrong wearer token")
     return value
+
+
+@router.post("/pair")
+def pair(session_id: str, body: Pairing):
+    """Exchanges the single-use code from the QR link for the session's wearer token."""
+    token = spatial_runs.wearer_pair(session_id, body.code)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Pairing code unknown, used, expired or locked")
+    return {"token": token}
 
 
 @router.get("/poll")

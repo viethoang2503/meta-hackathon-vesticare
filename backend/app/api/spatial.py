@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from app.services.drill_report import drill_report
+from app.services.stairs_trials import TrialRefused, end_trial, stairs_report, start_trial
 from app.services.spatial_runs import (
     DrillRefused,
     LiveNotReady,
@@ -35,7 +36,7 @@ class StartRequest(BaseModel):
 class StartLiveRequest(BaseModel):
     patient_id: int = Field(gt=0)
     device_id: str = Field(min_length=1, max_length=64)
-    source: Literal["esp32", "fake_esp32", "drill"] = "esp32"
+    source: Literal["esp32", "fake_esp32", "drill", "camera_trial"] = "esp32"
     # Simulated must be chosen explicitly and never counts as a real M2 send (MVP2.md).
     notification_mode: Literal["telegram", "simulated"] = "telegram"
     # Only for source "drill": shorten the wearer window for repeated M7 trials.
@@ -169,6 +170,44 @@ async def open_drill(session_id: str, body: DrillRequest) -> dict:
 @router.get("/sessions/{session_id}/drill-report")
 def drill_report_route(session_id: str) -> dict:
     return drill_report(session_id)
+
+
+class StairsTrialRequest(BaseModel):
+    condition: Literal["lit", "dim", "none"]
+
+
+def _refused(refused: TrialRefused):
+    status = {"busy": 409, "session_ended": 409, "no_open_trial": 409, "no_such_session": 404}.get(refused.reason, 422)
+    return HTTPException(status_code=status, detail=refused.reason)
+
+
+@router.post("/sessions/{session_id}/stairs-trials", status_code=201)
+def open_stairs_trial(session_id: str, body: StairsTrialRequest) -> dict:
+    try:
+        return start_trial(session_id, body.condition)
+    except TrialRefused as refused:
+        raise _refused(refused)
+
+
+@router.post("/sessions/{session_id}/stairs-trials/end")
+def close_stairs_trial(session_id: str) -> dict:
+    try:
+        return end_trial(session_id)
+    except TrialRefused as refused:
+        raise _refused(refused)
+
+
+@router.get("/sessions/{session_id}/stairs-report")
+def stairs_report_route(session_id: str) -> dict:
+    return stairs_report(session_id)
+
+
+@router.post("/sessions/{session_id}/pairing")
+def new_pairing(session_id: str) -> dict:
+    pairing = spatial_runs.new_pairing(session_id)
+    if pairing is None:
+        raise HTTPException(status_code=404, detail="No running live session with a wearer phone")
+    return pairing
 
 
 @router.get("/sessions/{session_id}/frames/{frame_id}")

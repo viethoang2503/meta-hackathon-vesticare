@@ -144,6 +144,9 @@ ANALYSIS_TIMEOUT_SECONDS = 45
 # Agent giai thich incident (docs/spatial/SPEC.md: max_tool_calls, analysis_timeout_seconds)
 AGENT_MODEL = "muse-spark-1.3"
 AGENT_MAX_TOOL_CALLS = 5
+# The live responder (MVP2.md, "Agent P0"): 8 tool calls inside 120 s.
+RESPONDER_MAX_TOOL_CALLS = 8
+RESPONDER_TIMEOUT_SECONDS = 120
 # Reasoning tokens count against this; 1200 cut the final JSON short on the first real run.
 AGENT_MAX_TOKENS = 4000
 FIXES_LIBRARY_PATH = PROJECT_ROOT / "assets" / "fixes" / "library.json"

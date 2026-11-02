@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from sqlalchemy.exc import IntegrityError
 
 from datetime import timedelta
 
@@ -60,6 +61,8 @@ from app.config import (
     LIVE_DEVICE_SILENT_SECONDS,
     LIVE_RUN_TIMEOUT_SECONDS,
     LIVE_WEARER_CANCEL_SECONDS,
+    RESPONDER_MAX_TOOL_CALLS,
+    RESPONDER_TIMEOUT_SECONDS,
     SAMPLING_RATE,
     SCENARIOS_DIR,
     SPATIAL_RUN_TIMEOUT_SECONDS,
@@ -78,6 +81,7 @@ from app.services.incident_policy import ALERTED, CANCELLED, decide_deadline, de
 from app.services.notifier import SimulatedNotifier
 from app.services.notify_templates import render
 from app.services.speech import SpeechJob, SpeechWorker, whisper_model
+from app.services.responder import ResponderTools, check_say, check_send, run_responder
 from app.services.live_frames import STAIRS_PROMPT, Frame, FrameStore, SamSlot, StairsGate, scene_status
 from app.services.wearer_channel import TURN_MS, WearerChannel
 from app.services.wearer_reply import classify_reply
@@ -121,7 +125,8 @@ class LiveNotReady(Exception):
 # MVP2.md M6: data is labelled by where it came from, so a recording replayed through the
 # fake device is never shown as this project's ESP32.
 LIVE_SOURCE_LABELS = {"esp32": "ESP32 waist IMU", "fake_esp32": "Simulated device (recorded scenario)",
-                      "drill": "Voice drill (no device, no fall detected)"}
+                      "drill": "Voice drill (no device, no fall detected)",
+                      "camera_trial": "Camera trial (no device, no fall detected)"}
 DRILL_EXPECTED = ("ok", "help", "ambiguous", "silence", "loudspeaker")
 UNKNOWN_LOCATION = {"source": "Unknown", "x": None, "z": None, "zone_id": None, "zone_label": None, "fall_exposure": False}
 # session_ms is device time mapped onto the session clock, nan while the device is unsynchronized.
@@ -398,9 +403,10 @@ class SpatialRunManager:
         pinned by the first batch. One active run at a time, replay or live.
 
         source "drill" is a voice drill for the M7 trials: no device, incidents opened by hand with
-        open_drill, never sent anywhere (simulated is forced), and the window may be shortened."""
+        open_drill, never sent anywhere (simulated is forced), and the window may be shortened.
+        source "camera_trial" is the same without incidents: only the camera runs, for the M3 trials."""
         drill = source == "drill"
-        if drill:
+        if source in ("drill", "camera_trial"):
             notification_mode = "simulated"
         wearer_cancel = (wearer_cancel_seconds if drill and wearer_cancel_seconds else self._live_wearer_cancel)
         notifier = self._pick_notifier("live", notification_mode)
@@ -778,6 +784,8 @@ class SpatialRunManager:
             self._track(session_id, self._deliver(session_id, lock, action_id))
         if follow.get("caregiver_timer"):
             self._track(session_id, self._caregiver_timer(session_id, lock, follow["caregiver_timer"]))
+        if follow.get("responder"):
+            self._track(session_id, self._respond(session_id, lock, follow["responder"]))
 
     async def _incident_timeline(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
         """Wakes at the wearer deadline D. A cancelled incident stays open until D + grace so a HELP
@@ -849,7 +857,7 @@ class SpatialRunManager:
         )
         db.add(action)
         db.flush()
-        return {"state": ALERTED, "deliver": [action.id], "caregiver_timer": row.id}
+        return {"state": ALERTED, "deliver": [action.id], "caregiver_timer": row.id, "responder": row.id}
 
     def _escalate_locked(self, db, session_id: str, row, reason: str) -> dict:
         if row.spatial_state != ALERTED or row.is_acknowledged or _action(db, f"escalate:{row.id}:contact_2"):
@@ -916,6 +924,10 @@ class SpatialRunManager:
                            "response_status": _response_status(db, row)}
             if detail["template"] == "notify_escalation":
                 values["escalation_reason"] = ESCALATION_REASONS[detail["escalation_reason"]]
+            if detail["template"] == "notify_evidence":
+                camera, scene, _ = _scene_values(db, row.id)
+                values |= {"response_status": _response_status(db, row), "camera_status": camera, "scene_status": scene,
+                           "location_label": "Unknown"}
             text = render(detail["template"], **values)
             detail["text"] = text
             action.detail = json.dumps(detail)
@@ -1159,6 +1171,25 @@ class SpatialRunManager:
             return None
         channel.last_seen = _utcnow()
         return channel
+
+    def new_pairing(self, session_id: str) -> dict | None:
+        """A fresh pairing code for the phone, replacing any earlier one. Laptop only (not through the tunnel)."""
+        channel, lock = self._channels.get(session_id), self._locks.get(session_id)
+        if channel is None or lock is None:
+            return None
+        with lock:
+            code, expires = channel.new_pairing(_utcnow())
+        return {"code": code, "expires_at": expires}
+
+    def wearer_pair(self, session_id: str, code: str | None) -> str | None:
+        channel, lock = self._channels.get(session_id), self._locks.get(session_id)
+        if channel is None or lock is None:
+            return None
+        with lock:
+            token = channel.redeem(code, _utcnow())
+        if token is not None:
+            channel.last_seen = _utcnow()
+        return token
 
     def wearer_poll(self, session_id: str, token: str | None, after: int) -> dict | None:
         channel, lock = self._channel(session_id, token), self._locks.get(session_id)
@@ -1405,6 +1436,133 @@ class SpatialRunManager:
         path = _journal_path(session_id, self._live_data_dir).parent / "frames" / f"{frame_id}.jpg"
         return path.read_bytes() if path.is_file() else None
 
+    # --- Responder (docs/spatial/MVP2.md, "Agent P0") --------------------------------------------
+    # Starts after the first alert action is committed and never gates it: sends and escalation
+    # run on their own tasks. Whatever the agent asks for is checked again under the run lock.
+
+    async def _respond(self, session_id: str, lock: threading.Lock, incident_id: int) -> None:
+        opened = await asyncio.to_thread(self._open_response, lock, session_id, incident_id)
+        if opened is None:
+            return
+        analysis_id, imu = opened
+        tools = ResponderTools(
+            read_facts=lambda: self._responder_facts(lock, session_id, incident_id, imu),
+            send=lambda contact, ids, seen: self._agent_send(lock, session_id, incident_id, imu, contact, ids, seen),
+            say=lambda template_id: self._agent_say(lock, session_id, incident_id, imu, template_id))
+        started = time.perf_counter()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(run_responder, tools, incident_id, self._chat,
+                                  max_tool_calls=RESPONDER_MAX_TOOL_CALLS, timeout_seconds=RESPONDER_TIMEOUT_SECONDS),
+                RESPONDER_TIMEOUT_SECONDS + 5)
+            outcome = {"status": result.status, "reason": result.reason,
+                       "output_text": json.dumps(result.result) if result.result is not None else None,
+                       "tool_log": json.dumps({"calls": result.tool_log, "usage": result.usage,
+                                               "rejected_answer": result.raw_answer})}
+        except asyncio.TimeoutError:
+            outcome = {"status": "TimedOut", "reason": f"no result within {RESPONDER_TIMEOUT_SECONDS} s"}
+        except Exception as err:
+            logger.exception("responder for incident %s failed", incident_id)
+            outcome = {"status": "Failed", "reason": type(err).__name__}
+        outcome["duration_ms"] = round((time.perf_counter() - started) * 1000)
+        await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
+
+    def _open_response(self, lock, session_id: str, incident_id: int):
+        """(analysis id, IMU summary) for a live incident that a person will read about, else None."""
+        with lock, self._db() as db:
+            session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
+            if session is None or session.kind != "live" or row.decision_source == "voice_drill":
+                return None
+            analysis = SpatialAnalysis(session_id=session_id, incident_id=incident_id, kind="agent", status="Running",
+                                       model=AGENT_MODEL, created_at=_utcnow())
+            db.add(analysis)
+            db.commit()
+            analysis_id, start = analysis.id, row.source_start_ms
+        _hint(session_id, "analysis")
+        return analysis_id, _live_imu_summary(_journal_path(session_id, self._live_data_dir), start)
+
+    def _responder_facts(self, lock, session_id: str, incident_id: int, imu: dict) -> dict:
+        with lock, self._db() as db:
+            return self._facts_locked(db, session_id, db.get(AlertEvent, incident_id), imu)
+
+    def _facts_locked(self, db, session_id: str, row, imu: dict) -> dict:
+        """What the responder may know and what the checks need, read together under the run lock."""
+        actions = db.query(SpatialAction).filter(SpatialAction.incident_id == row.id).order_by(SpatialAction.id).all()
+        sends: dict[str, str] = {}
+        delivery = []
+        for a in actions:
+            if a.kind in ("notify", "escalate"):
+                sends.pop(a.target, None)  # newest send last, so the dict order is the send order
+                sends[a.target] = json.loads(a.detail)["status"]
+                delivery.append({"evidence_id": f"delivery:{row.id}:{a.id}", "source": "Notifier result",
+                                 "contact": a.target, "template": json.loads(a.detail)["template"],
+                                 "status": sends[a.target], "error": json.loads(a.detail).get("error")})
+        if row.is_acknowledged:
+            ack = next(a for a in actions if a.kind == "ack")
+            delivery.append({"evidence_id": f"ack:{row.id}", "source": "Caregiver Acknowledge button", "by": ack.target})
+        channel = self._channels.get(session_id)
+        said = [u.template_id for u in channel.utterances if u.incident_id == row.id and u.status != "dropped"] if channel else []
+        camera, scene, scene_row = _scene_values(db, row.id)
+        response = _response_status(db, row)
+        event = [
+            {"evidence_id": f"imu:{row.id}", "source": "ESP32 waist IMU or its stand-in; see decision_source",
+             **imu, "decision_source": row.decision_source, "fall_probability": round(row.confidence or 0, 3)},
+            {"evidence_id": f"wearer:{row.id}", "source": "Phone microphone, classified by code", "response_status": response,
+             "alert_reason": row.alert_reason},
+        ]
+        scene_items = []
+        if scene_row is not None:
+            info = json.loads(scene_row.frame_info) if scene_row.frame_info else {}
+            if camera == "Available":
+                scene_items.append({"evidence_id": f"frame:{scene_row.frame_id}", "source": "Phone camera at eye height",
+                                    "camera_status": camera, "alignment_error_ms": round(abs(info.get("delta_ms") or 0))})
+            else:
+                scene_items.append({"evidence_id": f"camera:{row.id}", "source": "Phone camera", "camera_status": camera,
+                                    "reason": scene_row.reason})
+            scene_items.append({"evidence_id": f"sam:{scene_row.id}", "source": "SAM", "prompt": scene_row.prompt,
+                                "status": scene_row.status, "scene_status": scene, "objects": len(json.loads(scene_row.boxes or "[]")),
+                                "reason": scene_row.reason})
+        return {"incident_id": row.id, "state": row.spatial_state, "acknowledged": bool(row.is_acknowledged),
+                "sends": sends, "agent_updates": [a.target for a in actions if a.kind == "agent_update"], "said": said,
+                "evidence": {"event": event, "scene": scene_items, "delivery": delivery}}
+
+    def _agent_send(self, lock, session_id: str, incident_id: int, imu: dict, contact, evidence_ids, seen) -> dict:
+        with lock, self._db() as db:
+            session, row = db.get(SpatialSession, session_id), db.get(AlertEvent, incident_id)
+            if not _incident_session_ok(session):
+                return {"refused": "the live session has ended"}
+            reason = check_send(self._facts_locked(db, session_id, row, imu), contact, evidence_ids, seen)
+            if reason:
+                return {"refused": reason}
+            action = SpatialAction(session_id=session_id, incident_id=incident_id, kind="agent_update", target=contact,
+                                   action_key=f"agent_update:{incident_id}:{contact}", created_at=_utcnow(),
+                                   detail=json.dumps({"template": "notify_evidence", "status": "scheduled",
+                                                      "evidence_ids": evidence_ids,
+                                                      "channel": self._notifier_for(session_id).channel}))
+            db.add(action)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                return {"refused": "this contact already has the agent's update"}
+            action_id = action.id
+        _hint(session_id, "action")
+        self._loop.call_soon_threadsafe(self._dispatch, session_id, lock, {"deliver": [action_id]})
+        return {"scheduled": True, "contact": contact}
+
+    def _agent_say(self, lock, session_id: str, incident_id: int, imu: dict, template_id) -> dict:
+        channel = self._channels.get(session_id)
+        if channel is None:
+            return {"refused": "no wearer phone is attached"}
+        with lock, self._db() as db:
+            row = db.get(AlertEvent, incident_id)
+            reason = check_say(self._facts_locked(db, session_id, row, imu), template_id)
+            if reason:
+                return {"refused": reason}
+            channel.say(template_id, incident_id, _utcnow(), source="agent")
+        _hint(session_id, "wearer")
+        return {"said": template_id}
+
     async def _speech_done(self, job: SpeechJob, result: dict) -> None:
         meta, session_id = job.meta, job.meta["session_id"]
         channel = self._channels.get(session_id)
@@ -1546,6 +1704,33 @@ def _response_status(db, row) -> str:
     if _late_ok_reported(db, row.id):
         return "OK reported after alert"
     return "Help requested" if row.alert_reason == "wearer_help" else "No clear response"
+
+
+def _scene_values(db, incident_id: int):
+    """(camera_status, scene_status, analysis row) of the incident's newest scene analysis, in the
+    spec's words. With none, both are Unavailable: nothing is invented."""
+    row = (db.query(SpatialAnalysis).filter(SpatialAnalysis.incident_id == incident_id, SpatialAnalysis.kind == "sam",
+                                            SpatialAnalysis.camera_status.isnot(None))
+           .order_by(SpatialAnalysis.id.desc()).first())
+    if row is None:
+        return "Unavailable", "Unavailable", None
+    return row.camera_status, scene_status(row.status) if row.camera_status == "Available" else "Unavailable", row
+
+
+def _live_imu_summary(journal: Path, source_start_ms: int) -> dict:
+    """Peak acceleration and rotation around the fall and how still the last 2 s were, from the journal."""
+    table = _read_journal(journal)
+    if not len(table):
+        return {"note": "no IMU samples were journalled"}
+    window = table[(table[:, 0] >= source_start_ms - 1000) & (table[:, 0] <= source_start_ms + 5000)]
+    if not len(window):
+        return {"note": "no IMU samples near the fall"}
+    gyro = window[:, [JOURNAL_COLUMNS.index(c) for c in ("gx", "gy", "gz")]]
+    tail = window[window[:, 0] >= window[-1, 0] - 2000]
+    return {"window_s": [round((source_start_ms - 1000) / 1000, 2), round((source_start_ms + 5000) / 1000, 2)],
+            "peak_svm_g": round(float(window[:, JOURNAL_COLUMNS.index("svm")].max()), 2),
+            "peak_gyro_deg_s": round(float(np.linalg.norm(gyro, axis=1).max()), 1),
+            "svm_std_last_2s_g": round(float(tail[:, JOURNAL_COLUMNS.index("svm")].std()), 3)}
 
 
 def _local_time(utc_naive: datetime) -> str:

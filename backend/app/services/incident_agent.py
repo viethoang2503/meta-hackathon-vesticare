@@ -136,20 +136,27 @@ def _validate(answer: dict, tools: _Tools) -> str | None:
 
 
 def run_agent(bundle: dict, chat, *, max_tool_calls: int, timeout_seconds: float) -> AgentResult:
-    tools = _Tools(bundle)
-    deadline = time.monotonic() + timeout_seconds
     inc, loc = bundle["incident"], bundle["location"]
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Explain fall incident {inc['id']} (zone {loc['zone_id']}) and recommend environmental changes."},
-    ]
+    return run_tool_loop(SYSTEM_PROMPT,
+                         f"Explain fall incident {inc['id']} (zone {loc['zone_id']}) and recommend environmental changes.",
+                         TOOLS, _Tools(bundle), _validate, chat,
+                         max_tool_calls=max_tool_calls, timeout_seconds=timeout_seconds)
+
+
+def run_tool_loop(system_prompt: str, user_prompt: str, tools_spec: list, tools, validate, chat, *,
+                  max_tool_calls: int, timeout_seconds: float) -> AgentResult:
+    """One bounded tool conversation. `tools.run(name, args)` answers a call, `validate(answer, tools)`
+    returns why the final answer is unusable or None. A tool that refuses or fails says so in its
+    output; the log keeps that note next to the call."""
+    deadline = time.monotonic() + timeout_seconds
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     log, usage, calls = [], {}, 0
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return AgentResult("TimedOut", f"no answer within {timeout_seconds} s", tool_log=log, usage=usage)
         try:
-            reply = chat(messages, TOOLS, "auto" if calls < max_tool_calls else "none", remaining)
+            reply = chat(messages, tools_spec, "auto" if calls < max_tool_calls else "none", remaining)
         except AgentError as err:
             return AgentResult(err.status, err.reason, tool_log=log, usage=usage)
         for k, v in (reply.get("usage") or {}).items():
@@ -170,7 +177,10 @@ def run_agent(bundle: dict, chat, *, max_tool_calls: int, timeout_seconds: float
                 else:
                     calls += 1
                     output = tools.run(name, args)
-                log.append({"tool": name, "args": args, "evidence_ids": [i["evidence_id"] for i in output.get("items", []) if "evidence_id" in i]})
+                entry = {"tool": name, "args": args,
+                         "evidence_ids": [i["evidence_id"] for i in output.get("items", []) if "evidence_id" in i]}
+                entry |= {k: output[k] for k in ("refused", "scheduled", "said") if k in output}
+                log.append(entry)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output)})
             continue
         raw = {"finish_reason": reply.get("finish_reason"), "content": (message.get("content") or "")[:4000]}
@@ -182,7 +192,7 @@ def run_agent(bundle: dict, chat, *, max_tool_calls: int, timeout_seconds: float
         except (ValueError, json.JSONDecodeError) as err:
             return AgentResult("Failed", f"invalid output: {err} (finish_reason {raw['finish_reason']})",
                                tool_log=log, usage=usage, raw_answer=raw)
-        problem = _validate(answer, tools)
+        problem = validate(answer, tools)
         if problem:
             return AgentResult("Failed", f"invalid output: {problem}", tool_log=log, usage=usage, raw_answer=raw)
         return AgentResult("Complete", result=answer, tool_log=log, usage=usage)
