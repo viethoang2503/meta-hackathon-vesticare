@@ -108,7 +108,8 @@ $("begin").onclick = async () => {
   $("error").textContent = "";
   try {
     const snap = await api("live", { method: "POST", body: JSON.stringify({
-      patient_id: 1, device_id: $("device").value.trim(), source: $("src").value, notification_mode: $("mode").value }) });
+      patient_id: 1, device_id: $("device").value.trim(), source: $("src").value, notification_mode: $("mode").value,
+      record_frames: $("record").checked }) });
     session = snap.id;
     detail = { id: null, at: 0, body: null };
   } catch (e) {

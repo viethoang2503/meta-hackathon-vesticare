@@ -39,6 +39,7 @@
     <label>Source <select id="src"><option value="esp32">ESP32 waist IMU</option><option value="fake_esp32">Simulated device (recorded scenario)</option></select></label>
     <label>Send alerts <select id="mode"><option value="telegram">Telegram (real)</option><option value="simulated">Simulated (nothing leaves this laptop)</option></select></label>
     <label>Device id <input id="device" value="esp32-01" size="12"></label>
+    <label><input type="checkbox" id="record"> Record camera frames for S3 (only with the person's consent)</label>
     <button id="begin" class="primary">Start live session</button>
     <button id="end" disabled>Stop session</button>
   </div>

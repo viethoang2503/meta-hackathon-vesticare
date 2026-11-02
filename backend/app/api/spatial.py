@@ -41,6 +41,8 @@ class StartLiveRequest(BaseModel):
     notification_mode: Literal["telegram", "simulated"] = "telegram"
     # Only for source "drill": shorten the wearer window for repeated M7 trials.
     wearer_cancel_seconds: float | None = Field(default=None, ge=10, le=60)
+    # Keep every camera frame for an S3 package. Only with the person's consent to be recorded.
+    record_frames: bool = False
 
 
 class LocationOut(BaseModel):
@@ -144,7 +146,8 @@ async def start_live(body: StartLiveRequest):
         if body.wearer_cancel_seconds is not None and body.source != "drill":
             raise HTTPException(status_code=422, detail="wearer_cancel_seconds is only for source drill")
         session_id = await spatial_runs.start_live(body.patient_id, body.device_id, body.source,
-                                                   body.notification_mode, body.wearer_cancel_seconds)
+                                                   body.notification_mode, body.wearer_cancel_seconds,
+                                                   body.record_frames)
     except LiveNotReady:
         raise HTTPException(status_code=409, detail="Blocked: contact setup. Configure TELEGRAM_BOT_TOKEN, "
                                                     "TELEGRAM_CHAT_ID_1 and TELEGRAM_CHAT_ID_2, or choose simulated")

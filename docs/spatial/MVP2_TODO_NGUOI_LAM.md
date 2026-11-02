@@ -36,12 +36,14 @@ Không dán token, mật khẩu Wi-Fi hay link có `#t=` vào chat hoặc commit
 |---|---|---|---|
 | 4.1 | Nệm dày, sàn phẳng, người đứng cạnh | Bắt buộc khi thử ngã | G4, M4, S3 |
 | 4.2 | Hẹn ít nhất 2 người thử | Người trưởng thành khỏe mạnh, đồng ý trước khi ghi và công bố | M4, M7 |
-| 4.3 | Ghi S3 | Một lượt đủ bộ: ESP32 + iPhone 1 cùng người | M5 |
+| 4.3 | Ghi S3 | Một lượt đủ bộ: ESP32 + iPhone 1 cùng một người, người đó đồng ý trước. Mở `live.html`, tick "Record camera frames", bấm Start, ghép điện thoại, thực hiện lượt (ngã lên nệm, trả lời hoặc im lặng, Ack từ điện thoại liên hệ), bấm Stop. Rồi chạy `backend/tools/s3_export.py <session> --participant "<nhãn>" --publication granted --recorded-on <ngày>` ra `assets/scenarios/S3/`, và `backend/tools/s3_replay.py` ra bảng M5a/M5b. Gói không chứa âm thanh thô và bị từ chối nếu có token | M5 |
+| 4.3b | Bảng M4 theo người | Với mỗi người, ghi một phiên ESP32 có ≥3 lượt ngã và ≥10 lượt hoạt động thường ngày, ghi mốc giây nguồn của từng lượt. Lập `trials.json` (mẫu trong chú thích đầu `backend/tools/m4_report.py`) rồi chạy công cụ đó | M4 |
 | 4.4 | Gửi thư viện sơ cứu cho chuyên gia | `assets/first_aid/library.json`, cho giai đoạn sau P0 | Sau P0 |
 | 4.5 | Quay video demo | Cuối cùng, theo `MVP2_PLAN.md` | Nộp bài |
 
 ## Đã xong
 
+- U8 phần code: ghi ảnh khi phiên được đánh dấu, xuất gói S3, phát lại M5a/M5b, bảng M4 (2026-11-02). Đã chạy thử trên phiên giả lập, chưa có dữ liệu thật.
 - U7: agent trả lời có dẫn bằng chứng, trang laptop `http://127.0.0.1:8010/spatial/live.html` (bắt đầu phiên, trạng thái thiết bị/điện thoại/camera, lời người đeo nghe và nói, incident, bằng chứng), mã ghép nối dùng một lần cho QR (2026-11-02).
 - Công cụ bảng M3: trang `spatial/stairs.html`, phiên `camera_trial` (2026-11-02).
 - U6 phần code: ảnh 1 Hz từ iPhone 1, SAM `stairs`, lời nhắc có cooldown, ảnh gần lúc ngã gắn vào incident (2026-11-02).

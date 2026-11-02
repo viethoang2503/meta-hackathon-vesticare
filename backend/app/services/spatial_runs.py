@@ -32,6 +32,7 @@ with asyncio.to_thread keeps running after its coroutine is cancelled.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -153,6 +154,7 @@ class LiveRun:
     journal: Path
     started_mono_ms: float
     drill: bool = False
+    record_frames: bool = False  # keep every camera frame on disk (S3 recording, with the person's consent)
     stream: LiveStream | None = None
     incident_rows: dict = field(default_factory=dict)
     ingest_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -398,7 +400,8 @@ class SpatialRunManager:
             await asyncio.gather(*self._dispatches, return_exceptions=True)
 
     async def start_live(self, patient_id: int, device_id: str, source: str = "esp32",
-                         notification_mode: str = "telegram", wearer_cancel_seconds: float | None = None) -> str:
+                         notification_mode: str = "telegram", wearer_cancel_seconds: float | None = None,
+                         record_frames: bool = False) -> str:
         """Start a live session for one device. Samples arrive through ingest_live; the boot id is
         pinned by the first batch. One active run at a time, replay or live.
 
@@ -425,6 +428,7 @@ class SpatialRunManager:
                 "notification_mode": notifier.channel,
                 "source": source,
                 "source_label": LIVE_SOURCE_LABELS[source],
+                "record_frames": record_frames,
             }
             db.add(SpatialSession(
                 id=session_id, kind="live", scenario_id=None, patient_id=patient_id, device_id=device_id,
@@ -442,6 +446,7 @@ class SpatialRunManager:
         self._frames[session_id], self._stairs[session_id] = FrameStore(), StairsGate()
         self._live[session_id] = LiveRun(
             patient_id=patient_id, device_id=device_id, wearer_cancel=wearer_cancel, drill=drill,
+            record_frames=record_frames,
             monitor=StreamMonitor(stream_key=f"session:{session_id}", detector=self._detector),
             journal=_journal_path(session_id, self._live_data_dir),
             started_mono_ms=time.monotonic() * 1000,
@@ -940,7 +945,7 @@ class SpatialRunManager:
         with lock, self._db() as db:
             action = db.get(SpatialAction, action_id)
             row = db.get(AlertEvent, action.incident_id)
-            detail = {**json.loads(action.detail), **outcome}
+            detail = {**json.loads(action.detail), **outcome, "done_at": _utcnow().isoformat()}
             action.detail = json.dumps(detail)
             follow: dict = {"deliver": []}
             if action.kind == "notify":
@@ -1282,7 +1287,9 @@ class SpatialRunManager:
         received = _utcnow()
         capture_end, capture_problem = self._capture_end(session_id, incident_id, capture_start_ms, capture_end_ms, received)
         channel.turns += 1
+        capture_start = None if capture_start_ms is None else self._phone_to_utc(session_id, capture_start_ms, received)
         meta = {"session_id": session_id, "incident_id": incident_id, "mime": mime, "bytes": len(data),
+                "received_at": received.isoformat(), "capture_start": capture_start.isoformat() if capture_start else None,
                 "capture_end": capture_end, "capture_problem": capture_problem,
                 "capture_ms": None if capture_start_ms is None or capture_end_ms is None else capture_end_ms - capture_start_ms}
         dropped = self._speech.submit(SpeechJob(data, meta, self._speech_done))
@@ -1321,6 +1328,9 @@ class SpatialRunManager:
         frame = Frame(store.received + 1, _utcnow(), received_mono, source_ms, uncertainty, data, captured_mono,
                       None if captured_mono is None else phone["uncertainty_ms"])
         store.add(frame)
+        run = self._live.get(session_id)
+        if run is not None and run.record_frames:
+            await asyncio.to_thread(_record_frame, _journal_path(session_id, self._live_data_dir).parent, frame)
         gate.offer(frame)
         job = gate.take(frame.received_mono)
         if job is not None:
@@ -1576,7 +1586,8 @@ class SpatialRunManager:
             capture_end, problem = None, "decoded length does not match the capture interval"
         speech = {"status": result["status"], "transcript": result.get("transcript"), "queue_ms": result.get("queue_ms"),
                   "stt_ms": result.get("stt_ms"), "error": result.get("error") or result.get("reason"),
-                  "capture_problem": problem, "mime": meta["mime"], "bytes": meta["bytes"]}
+                  "capture_problem": problem, "mime": meta["mime"], "bytes": meta["bytes"],
+                  "received_at": meta["received_at"], "capture_start": meta["capture_start"]}
         reply = classify_reply(result.get("transcript")) if result["status"] == "ok" else "unclear"
         if reply == "ok" and capture_end is None:
             # Only an answer heard inside this incident's listening can cancel it. HELP still
@@ -1614,6 +1625,18 @@ def _evidence_bundle(scenario: Scenario, row, sam, others) -> dict:
                     "zone_id": location_at(scenario.meta, o.source_start_ms)["zone_id"]} for o in others],
         "fixes": _fixes_library(),
     }
+
+
+def _record_frame(folder: Path, frame: Frame) -> None:
+    """One frame and its index line, for the S3 package: id, capture source time, clock uncertainty, receive time, hash."""
+    frames = folder / "frames"
+    frames.mkdir(parents=True, exist_ok=True)
+    (frames / f"{frame.id}.jpg").write_bytes(frame.data)
+    line = {"id": frame.id, "file": f"frames/{frame.id}.jpg", "source_ms": frame.source_ms,
+            "uncertainty_ms": frame.uncertainty_ms, "received_at": frame.received_at.isoformat(),
+            "bytes": len(frame.data), "sha256": hashlib.sha256(frame.data).hexdigest()}
+    with (folder / "frames.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(line) + "\n")
 
 
 def _append_journal(path: Path, steps, received_at: datetime, session_offset: float | None) -> None:
