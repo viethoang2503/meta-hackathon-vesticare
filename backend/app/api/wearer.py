@@ -13,7 +13,7 @@ import time
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.services.spatial_runs import spatial_runs
+from app.services.spatial_runs import LiveRunEnded, spatial_runs
 
 router = APIRouter(prefix="/api/wearer/{session_id}", tags=["Wearer"])
 MAX_AUDIO_BYTES = 2 * 1024 * 1024
@@ -98,4 +98,7 @@ async def frame(session_id: str, request: Request, capture: float | None = None,
         raise HTTPException(status_code=413 if data else 422, detail="Frame missing or larger than 1 MB")
     if data[:2] != b"\xff\xd8":
         raise HTTPException(status_code=422, detail="Frame is not a JPEG")
-    return _ok(await spatial_runs.wearer_frame(session_id, x_wearer_token, data, capture))
+    try:
+        return _ok(await spatial_runs.wearer_frame(session_id, x_wearer_token, data, capture))
+    except LiveRunEnded:
+        raise HTTPException(status_code=409, detail="The live session has ended")

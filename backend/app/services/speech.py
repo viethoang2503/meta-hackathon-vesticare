@@ -14,6 +14,7 @@ newest is the most current. Every drop is reported.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import io
 import logging
 import threading
@@ -88,6 +89,10 @@ class SpeechWorker:
         self._max_waiting = max_waiting
         self._job_timeout = job_timeout
         self.stuck = 0
+        # One inference thread. A job that times out cannot be killed, so it keeps this thread; new turns
+        # are refused until it ends instead of starting a second inference beside it.
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+        self._abandoned: concurrent.futures.Future | None = None
         self._waiting: deque[SpeechJob] = deque()
         self._wake: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
@@ -120,15 +125,22 @@ class SpeechWorker:
                 continue
             job = self._waiting.popleft()
             started = time.monotonic()
-            try:
-                result = await asyncio.wait_for(asyncio.to_thread(self._process, job), self._job_timeout)
-            except asyncio.TimeoutError:
-                self.stuck += 1
-                logger.error("speech job exceeded %s s; abandoned (%s stuck so far)", self._job_timeout, self.stuck)
-                result = {"status": "failed", "error": f"transcription took longer than {self._job_timeout} s"}
-            except Exception as err:
-                logger.exception("speech job failed")
-                result = {"status": "failed", "error": type(err).__name__}
+            if self._abandoned is not None and not self._abandoned.done():
+                result = {"status": "failed", "error": "an earlier transcription is still running"}
+            else:
+                self._abandoned = None
+                work = self._executor.submit(self._process, job)
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(work)), self._job_timeout)
+                except asyncio.TimeoutError:
+                    self.stuck += 1
+                    self._abandoned = work
+                    logger.error("speech job exceeded %s s; its thread is kept until it ends (%s stuck so far)",
+                                 self._job_timeout, self.stuck)
+                    result = {"status": "failed", "error": f"transcription took longer than {self._job_timeout} s"}
+                except Exception as err:
+                    logger.exception("speech job failed")
+                    result = {"status": "failed", "error": type(err).__name__}
             result |= {"queue_ms": round((started - job.submitted) * 1000),
                        "stt_ms": round((time.monotonic() - started) * 1000)}
             try:

@@ -2,7 +2,7 @@
 // backend queues, waits a guard so its own voice is not recorded, and records fixed turns while
 // the backend says to listen. It never cuts a turn to speak and never extends a deadline: the
 // backend decides everything; this page only plays, records and reports.
-import { turnLength } from "./turn.js";
+import { recordUntil, turnLength } from "./turn.js";
 
 const params = new URLSearchParams(location.hash.slice(1));
 const session = params.get("s");
@@ -75,18 +75,11 @@ function speak(text) {
   });
 }
 
-async function recordTurn(ms) {
+async function recordTurn(endAt) {
   const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), mime ? { mimeType: mime } : {});
   const parts = [];
   recorder.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
-  const stopped = new Promise((r) => { recorder.onstop = r; });
-  const started = new Promise((r) => { recorder.onstart = () => r(performance.now()); });
-  recorder.start();
-  const start = await started;  // capture begins here, not when start() was called
-  await sleep(Math.max(0, ms - (performance.now() - start)));
-  const end = performance.now();  // capture ends at stop(); finalizing the file comes after
-  recorder.stop();
-  await stopped;  // finalized file, never a timeslice fragment
+  const { start, end } = await recordUntil(recorder, endAt, { now: () => performance.now(), sleep });  // finalized file, never a timeslice fragment
   return { blob: new Blob(parts, { type: recorder.mimeType || mime }), start, end };
 }
 
@@ -135,10 +128,15 @@ async function loop() {
         continue;
       }
       const listen = state.listen;
-      const length = turnLength(listen, backendOffset, performance.now(), MIN_TURN_MS);
+      const decidedAt = performance.now();
+      const length = turnLength(listen, backendOffset, decidedAt, MIN_TURN_MS);
       if (length > 0) {
         show(listen.mode === "help_only" ? "Listening for help" : "Listening", `${Math.ceil(length / 1000)} s turn`);
-        const turn = await recordTurn(length);
+        const turn = await recordTurn(decidedAt + length);
+        if (turn.end - turn.start < MIN_TURN_MS) {
+          log("recorder started too late for a useful turn");
+          continue;
+        }
         const reply = await call("audio", {
           body: turn.blob, type: turn.blob.type || "application/octet-stream",
           query: `?incident_id=${listen.incident_id}&capture_start=${turn.start}&capture_end=${turn.end}`,

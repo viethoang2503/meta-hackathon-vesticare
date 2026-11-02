@@ -1,14 +1,20 @@
 from datetime import datetime
 
+import asyncio
+
 import pytest
 
-from app.services.live_frames import (ADVISORY_COOLDOWN_S, FrameStore, Frame, StairsGate, scene_status)
+from app.services import live_frames
+from app.services.live_frames import (ADVISORY_COOLDOWN_S, FrameStore, Frame, SamSlot, StairsGate, scene_status)
 
 T0 = datetime(2026, 11, 2, 10, 0, 0)
 
 
-def frame(seq, source_ms=None, unc=20.0, mono=100.0):
-    return Frame(seq, T0, mono, source_ms, unc if source_ms is not None else None, b"\xff\xd8")
+def frame(seq, source_ms=None, unc=20.0, mono=100.0, captured=...):
+    """`captured` is the capture time on the backend clock; by default the frame was captured on arrival."""
+    captured = mono if captured is ... else captured
+    return Frame(seq, T0, mono, source_ms, unc if source_ms is not None else None, b"\xff\xd8",
+                 captured, None if captured is None else 10.0)
 
 
 def test_match_picks_nearest_frame_within_tolerance():
@@ -63,10 +69,22 @@ def test_gate_starts_requests_at_least_three_seconds_apart():
 
 
 @pytest.mark.parametrize("age, incident_open, expected", [
-    (1, False, True), (5, False, True), (5.1, False, False), (1, True, False)])
+    (1, False, True), (4.9, False, True), (5.1, False, False), (1, True, False)])
 def test_announce_needs_a_fresh_answer_and_no_open_incident(age, incident_open, expected):
     gate = StairsGate()
     assert gate.may_announce(frame(1, mono=100), 100 + age, incident_open) is expected
+
+
+def test_an_old_frame_uploaded_just_now_is_not_a_fresh_sighting():
+    gate = StairsGate()
+    old = frame(1, mono=100, captured=80)            # captured 20 s before it arrived
+    assert not gate.may_announce(old, 101, incident_open=False)
+    assert not gate.may_announce(frame(2, mono=100, captured=None), 101, incident_open=False)  # capture time unknown
+
+
+def test_clock_uncertainty_counts_against_freshness():
+    assert StairsGate().may_announce(Frame(1, T0, 100, None, None, b"", 95.1, 10.0), 100.0, incident_open=False)
+    assert not StairsGate().may_announce(Frame(1, T0, 100, None, None, b"", 95.1, 200.0), 100.0, incident_open=False)
 
 
 def test_announce_waits_out_the_cooldown_and_a_refusal_does_not_start_it():
@@ -85,3 +103,24 @@ def test_announce_waits_out_the_cooldown_and_a_refusal_does_not_start_it():
                                           ("Unavailable", "Unavailable"), (None, "Unavailable")])
 def test_scene_status_uses_the_spec_words(status, word):
     assert scene_status(status) == word
+
+
+def test_the_sam_slot_serves_one_caller_at_a_time_and_spaces_the_starts(monkeypatch):
+    """Review finding 5: an advisory and an incident scene share one slot."""
+    monkeypatch.setattr(live_frames, "SAM_MIN_START_GAP_S", 0.2)
+    active, peak, starts = [0], [0], []
+
+    async def call():
+        starts.append(asyncio.get_running_loop().time())
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.05)
+        active[0] -= 1
+        return "done"
+
+    async def go():
+        slot = SamSlot()
+        return await asyncio.gather(slot.run(call), slot.run(call), slot.run(call))
+    assert asyncio.run(go()) == ["done"] * 3
+    assert peak[0] == 1
+    assert all(b - a >= 0.19 for a, b in zip(starts, starts[1:]))

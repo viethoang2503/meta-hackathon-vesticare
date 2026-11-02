@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { turnLength } from "../glasses/turn.js";
+import { recordUntil, turnLength } from "../glasses/turn.js";
 
 const listen = { turn_ms: 4000, remaining_ms: 1000, until_backend_ms: 51_000 };
 
@@ -20,4 +20,27 @@ test("a full turn when the deadline is far, nothing when it is too close", () =>
 
 test("before the first clock sync the stale remaining time is shortened by a margin", () => {
   assert.equal(turnLength(listen, null, 0), 700);
+});
+
+function fakeRecorder(clock, startupMs) {
+  return {
+    start() { clock.t += startupMs; queueMicrotask(() => this.onstart()); },
+    stop() { clock.stoppedAt = clock.t; queueMicrotask(() => this.onstop()); },
+  };
+}
+
+test("a slow recorder start shortens the turn instead of running past the deadline", async () => {
+  // Review finding 7: chosen at 200 ms for a 1000 ms deadline, recorder ready at 400 ms.
+  const clock = { t: 200 };
+  const sleep = async (ms) => { clock.t += ms; };
+  const got = await recordUntil(fakeRecorder(clock, 200), 1000, { now: () => clock.t, sleep });
+  assert.deepEqual(got, { start: 400, end: 1000 });
+  assert.equal(clock.stoppedAt, 1000);
+});
+
+test("a recorder that starts after the deadline stops at once with an empty turn", async () => {
+  const clock = { t: 900 };
+  const sleep = async (ms) => { clock.t += ms; };
+  const got = await recordUntil(fakeRecorder(clock, 300), 1000, { now: () => clock.t, sleep });
+  assert.equal(got.end - got.start, 0);
 });

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,7 @@ from app import database  # noqa: E402
 from app.api import sensor as sensor_api  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models.schemas import SpatialAnalysis  # noqa: E402
+from app.models.schemas import AlertEvent, SpatialAnalysis  # noqa: E402
 from app.services import spatial_runs as runs_module  # noqa: E402
 from app.services.sam_client import SamResult  # noqa: E402
 from app.services.spatial_runs import load_scenario, spatial_runs  # noqa: E402
@@ -101,6 +102,7 @@ class LiveCameraTest(unittest.TestCase):
     def test_stairs_in_view_is_spoken_once_and_stored(self):
         with TestClient(app) as client:
             sid, auth = self.start(client)
+            self.sync_phone(client, sid, auth)
             try:
                 self.frame(client, sid, auth, capture=phone_now())
                 self.assertEqual(self.spoken(client, sid, auth), ["Stairs visible ahead."])
@@ -114,6 +116,7 @@ class LiveCameraTest(unittest.TestCase):
     def test_a_second_sighting_inside_the_cooldown_is_stored_but_not_spoken(self):
         with TestClient(app) as client:
             sid, auth = self.start(client)
+            self.sync_phone(client, sid, auth)
             try:
                 self.frame(client, sid, auth, capture=phone_now())
                 self.assertEqual(self.spoken(client, sid, auth), ["Stairs visible ahead."])
@@ -127,6 +130,96 @@ class LiveCameraTest(unittest.TestCase):
                     self.assertEqual(db.query(SpatialAnalysis).filter_by(session_id=sid, status="Complete").count(), 2)
             finally:
                 client.post(f"/api/spatial/sessions/{sid}/stop")
+
+    def set_incident(self, iid, state, deadline_offset_s):
+        with database.SessionLocal() as db:
+            row = db.get(AlertEvent, iid)
+            row.spatial_state = state
+            row.wearer_deadline_at = runs_module._utcnow() + timedelta(seconds=deadline_offset_s)
+            db.commit()
+
+    def test_a_cancelled_incident_blocks_advisories_only_until_its_window_and_grace_end(self):
+        """Review finding 3: a cancelled incident used to block advisories for the rest of the session."""
+        with TestClient(app) as client:
+            sid, auth = self.start(client)
+            self.sync_phone(client, sid, auth)
+            try:
+                iid = self.open_incident(client, sid)
+                self.set_incident(iid, "cancelled_by_wearer", +20)           # window still open
+                self.frame(client, sid, auth, capture=phone_now())
+                self.assertEqual(self.spoken(client, sid, auth, wait=1.5), [])
+                self.set_incident(iid, "cancelled_by_wearer", -30)           # deadline and grace (2 s here) are over
+                time.sleep(3.2)
+                self.frame(client, sid, auth, capture=phone_now())
+                self.assertEqual(self.spoken(client, sid, auth), ["Stairs visible ahead."])
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+                client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
+
+    def test_an_old_photo_uploaded_now_does_not_make_a_new_advisory(self):
+        """Review finding 4: freshness counts from the capture time, not from the upload."""
+        with TestClient(app) as client:
+            sid, auth = self.start(client)
+            try:
+                self.sync_phone(client, sid, auth)
+                self.frame(client, sid, auth, capture=phone_now() - 20_000)
+                self.assertEqual(self.spoken(client, sid, auth, wait=1.5), [])
+                with database.SessionLocal() as db:
+                    self.assertEqual(db.query(SpatialAnalysis).filter_by(session_id=sid).one().status, "Complete")
+                time.sleep(3.1)
+                self.frame(client, sid, auth, capture=phone_now())
+                self.assertEqual(self.spoken(client, sid, auth), ["Stairs visible ahead."])
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+
+    def test_a_frame_without_a_synchronized_phone_clock_never_speaks(self):
+        with TestClient(app) as client:
+            sid, auth = self.start(client)
+            try:
+                self.frame(client, sid, auth, capture=phone_now())
+                self.assertEqual(self.spoken(client, sid, auth, wait=1.5), [])
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+
+    def test_after_stop_the_token_still_works_for_the_incident_but_frames_are_refused(self):
+        """Review finding 6."""
+        with TestClient(app) as client:
+            sid, auth = self.start(client)
+            try:
+                iid = self.open_incident(client, sid)
+                self.sync_phone(client, sid, auth)
+                self.assertEqual(self.frame(client, sid, auth, capture=phone_now()).status_code, 202)
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+                refused = self.frame(client, sid, auth, capture=phone_now())
+                self.assertEqual(refused.status_code, 409)
+                self.assertEqual(client.get(f"/api/wearer/{sid}/poll", headers=auth).status_code, 200)
+                self.assertEqual(spatial_runs._frames[sid].received, 1)
+            finally:
+                client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
+
+    def test_incident_detail_shows_the_matched_frame_and_why_an_unmatched_one_is_not_evidence(self):
+        """Review finding 2: the evidence API used to say there were no frames."""
+        with TestClient(app) as client:
+            sid, auth = self.start(client)
+            try:
+                iid = self.open_incident(client, sid)
+                time.sleep(0.3)
+                none = client.get(f"/api/spatial/incidents/{iid}").json()["frame"]
+                self.assertEqual((none["status"], none["reason"]), ("Unavailable", "no frame was received"))
+                self.sync_phone(client, sid, auth)
+                fall_ms = next(i for i in client.get(f"/api/spatial/sessions/{sid}").json()["incidents"] if i["id"] == iid)["source_start_ms"]
+                at_zero, _ = spatial_runs._frame_source_ms(sid, 0)
+                self.frame(client, sid, auth, capture=fall_ms - at_zero + 200)
+                analysis_id, request = spatial_runs._open_scene_analysis(spatial_runs._locks[sid], sid, iid)
+                spatial_runs._close_analysis(spatial_runs._locks[sid], sid, analysis_id,
+                                             {"status": "Complete", "boxes": "[]", "output_text": "x"})
+                frame = client.get(f"/api/spatial/incidents/{iid}").json()["frame"]
+                self.assertEqual((frame["status"], frame["id"], frame["scene"], frame["alignment_error_ms"]),
+                                 ("Available", "live-1", "Scene analysis: Stairs visible", 200))
+                self.assertEqual(client.get(frame["url"]).content, JPEG)
+            finally:
+                client.post(f"/api/spatial/sessions/{sid}/stop")
+                client.post(f"/api/spatial/incidents/{iid}/acknowledge", json={"actor_id": "cleanup"})
 
     def test_no_stairs_found_says_nothing(self):
         self.boxes = []

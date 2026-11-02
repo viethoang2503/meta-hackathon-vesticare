@@ -63,7 +63,7 @@ function renderReport(report) {
   let html = "";
   for (const [person, p] of Object.entries(report.people)) {
     const g = p.groups;
-    const cell = (k) => (g[k] ? `${g[k].correct}/${g[k].n}` : "0/0");
+    const cell = (k) => (g[k] ? `${g[k].correct}/${g[k].n}${g[k].pending ? ` (+${g[k].pending} running)` : ""}` : "0/0");
     html += `<h2>${person} <span class="${p.status}">${p.status}</span></h2><table>` +
       row(["Group", "Handled correctly", "Cancelled", "Raised HELP wrongly"], "th") +
       Object.keys(names).map((k) => row([names[k], cell(k), g[k]?.cancelled ?? 0, g[k]?.false_help ?? 0])).join("") + "</table>" +

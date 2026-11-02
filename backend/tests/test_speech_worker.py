@@ -57,31 +57,44 @@ def test_undecodable_audio_is_a_failed_turn_not_silence():
     assert result["status"] == "failed" and "transcript" not in result
 
 
-def test_a_stuck_turn_is_failed_after_the_timeout_and_the_next_turn_still_runs():
-    """Review finding 8: one inference that never returns must not block later turns."""
+def test_a_stuck_inference_is_never_joined_by_a_second_one():
+    """Review finding 8: a timed-out inference keeps its thread; later turns are refused, not run beside it."""
     import threading
-    release = threading.Event()
+    release, running, peak = threading.Event(), [0], [0]
+    lock = threading.Lock()
 
     def transcribe(pcm):
-        if not release.is_set() and transcribe.calls == 0:
-            transcribe.calls += 1
-            release.wait(5)        # the first call hangs
-            return "too late"
-        return "I need help"
-    transcribe.calls = 0
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        try:
+            if not release.is_set():
+                release.wait(5)        # the first call hangs
+                return "too late"
+            return "I need help"
+        finally:
+            with lock:
+                running[0] -= 1
 
     async def go():
         worker, results = SpeechWorker(transcribe, job_timeout=0.3), []
 
         async def on_done(job, result):
             results.append((job.meta["n"], result["status"], result.get("transcript")))
+
+        async def wait_for(count):
+            while len(results) < count:
+                await asyncio.sleep(0.02)
         worker.submit(SpeechJob(wav(), {"n": 1}, on_done))
-        await asyncio.sleep(0.01)
-        worker.submit(SpeechJob(wav(), {"n": 2}, on_done))
-        while len(results) < 2:
-            await asyncio.sleep(0.05)
+        await wait_for(1)                                  # timed out after 0.3 s
+        for n in (2, 3):
+            worker.submit(SpeechJob(wav(), {"n": n}, on_done))
+        await wait_for(3)                                  # refused at once while the thread is busy
         release.set()
+        await asyncio.sleep(0.2)                           # the hung call returns; the worker recovers
+        worker.submit(SpeechJob(wav(), {"n": 4}, on_done))
+        await wait_for(4)
         return results, worker.stuck
     results, stuck = asyncio.run(go())
-    assert results == [(1, "failed", None), (2, "ok", "I need help")]
-    assert stuck == 1
+    assert results == [(1, "failed", None), (2, "failed", None), (3, "failed", None), (4, "ok", "I need help")]
+    assert (stuck, peak[0]) == (1, 1)

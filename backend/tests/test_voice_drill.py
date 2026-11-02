@@ -31,8 +31,10 @@ def wav(seconds):
     return buf.getvalue()
 
 
-def trial(person, expected, state, alert_reason=None, heard=()):
-    return {"person": person, "expected": expected, "state": state, "alert_reason": alert_reason, "heard": list(heard)}
+def trial(person, expected, state, alert_reason=None, heard=(), settled=True, cancelled=None):
+    return {"person": person, "expected": expected, "state": state, "alert_reason": alert_reason, "heard": list(heard),
+            "settled": settled, "cancelled": state == "cancelled_by_wearer" if cancelled is None else cancelled,
+            "help_alert": alert_reason == "wearer_help"}
 
 
 def full_set(person="ann", ok_cancelled=10, help_raised=10, false_cancel_in=None):
@@ -49,7 +51,7 @@ def full_set(person="ann", ok_cancelled=10, help_raised=10, false_cancel_in=None
 def test_a_full_clean_set_passes_and_groups_stay_separate():
     p = summarize(full_set(ok_cancelled=9, help_raised=9))["people"]["ann"]
     assert p["status"] == "Pass"
-    assert p["groups"]["ok"] == {"n": 10, "correct": 9, "false_help": 0, "cancelled": 9}
+    assert p["groups"]["ok"] == {"n": 10, "correct": 9, "false_help": 0, "cancelled": 9, "pending": 0}
     assert p["groups"]["silence_or_loudspeaker"]["n"] == 10
     assert p["false_cancel_count"] == 0
 
@@ -66,6 +68,28 @@ def test_below_target_or_too_few_trials():
     assert summarize(full_set()[:25])["people"]["ann"]["status"] == "Incomplete"
     both = summarize(full_set("ann") + full_set("bob", help_raised=5))["people"]
     assert (both["ann"]["status"], both["bob"]["status"]) == ("Pass", "Fail")
+
+
+def test_the_target_is_a_rate_so_extra_trials_cannot_dilute_it():
+    trials = [trial("ann", "ok", "cancelled_by_wearer" if i < 9 else "alerted", None if i < 9 else "timeout") for i in range(100)]
+    trials += full_set()[10:]
+    assert summarize(trials)["people"]["ann"]["status"] == "Fail"      # 9 of 100
+
+
+def test_trials_still_running_are_not_scored_and_keep_the_person_incomplete():
+    pending = [trial("ann", "ambiguous", "awaiting_wearer", settled=False) for _ in range(10)]
+    done = full_set()
+    done = [t for t in done if t["expected"] != "ambiguous"] + pending
+    p = summarize(done)["people"]["ann"]
+    assert p["status"] == "Incomplete" and p["groups"]["ambiguous"] == {
+        "n": 0, "correct": 0, "false_help": 0, "cancelled": 0, "pending": 10}
+
+
+def test_a_false_cancel_stays_counted_when_help_later_raised_the_alert():
+    trials = full_set()
+    trials[20] = trial("ann", "ambiguous", "alerted", "wearer_help", ["I'm fine", "help"], cancelled=True)
+    p = summarize(trials)["people"]["ann"]
+    assert p["status"] == "Fail" and p["false_cancel_count"] == 1
 
 
 class DrillSessionTest(unittest.TestCase):

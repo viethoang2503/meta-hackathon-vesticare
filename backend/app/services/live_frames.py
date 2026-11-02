@@ -9,6 +9,8 @@ one request at a time, and its answer may become a spoken advisory only while it
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +31,10 @@ class Frame:
     source_ms: float | None         # capture time on the IMU's source clock; None while a clock is unsynchronized
     uncertainty_ms: float | None
     data: bytes
+    # Capture time on the backend monotonic clock from the phone's clock mapping alone; the age of a
+    # frame is measured from here, never from when it was uploaded. None while the phone is unsynchronized.
+    captured_mono: float | None = None
+    capture_uncertainty_ms: float | None = None
 
     @property
     def id(self) -> str:
@@ -96,13 +102,33 @@ class StairsGate:
         self.busy = False
 
     def may_announce(self, frame: Frame, now: float, incident_open: bool) -> bool:
-        """True once per cooldown, for a fresh answer, outside an incident's response window."""
-        if incident_open or now - frame.received_mono > SAM_RESULT_MAX_AGE_S:
+        """True once per cooldown, for a frame captured under 5 s ago (clock uncertainty counted
+        against it), outside an incident's response window. A frame whose capture time cannot be
+        placed on the backend clock is never fresh."""
+        if incident_open or frame.captured_mono is None:
+            return False
+        if now - frame.captured_mono + frame.capture_uncertainty_ms / 1000 > SAM_RESULT_MAX_AGE_S:
             return False
         if self.last_spoken is not None and now - self.last_spoken < ADVISORY_COOLDOWN_S:
             return False
         self.last_spoken = now
         return True
+
+
+@dataclass
+class SamSlot:
+    """One live SAM request at a time for a session, whoever asks, with starts at least 3 s apart."""
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _last_start: float | None = None
+
+    async def run(self, call):
+        async with self._lock:
+            if self._last_start is not None:
+                wait = self._last_start + SAM_MIN_START_GAP_S - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            self._last_start = time.monotonic()
+            return await call()
 
 
 def scene_status(analysis_status: str | None) -> str:

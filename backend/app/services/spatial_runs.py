@@ -78,7 +78,7 @@ from app.services.incident_policy import ALERTED, CANCELLED, decide_deadline, de
 from app.services.notifier import SimulatedNotifier
 from app.services.notify_templates import render
 from app.services.speech import SpeechJob, SpeechWorker, whisper_model
-from app.services.live_frames import STAIRS_PROMPT, Frame, FrameStore, StairsGate, scene_status
+from app.services.live_frames import STAIRS_PROMPT, Frame, FrameStore, SamSlot, StairsGate, scene_status
 from app.services.wearer_channel import TURN_MS, WearerChannel
 from app.services.wearer_reply import classify_reply
 from app.services.live_stream import MAX_SAMPLE_GAP_MS, BatchRejected, DeviceSample, LiveStream
@@ -283,6 +283,7 @@ class SpatialRunManager:
         self._incident_cfg: dict[str, IncidentConfig] = {}
         self._channels: dict[str, WearerChannel] = {}
         self._frames: dict[str, FrameStore] = {}
+        self._sam_slots: dict[str, SamSlot] = {}
         self._stairs: dict[str, StairsGate] = {}
         # Acks outlive the run's registry: a contact may tap long after the last task ended.
         self._idle_lock = threading.Lock()
@@ -768,7 +769,8 @@ class SpatialRunManager:
         if session_id in self._runs or self._incident_tasks.get(session_id):
             return
         for registry in (self._incident_tasks, self._locks, self._stop_requested, self._incident_cfg,
-                         self._session_notifiers, self._channels, self._phone_clocks, self._frames, self._stairs):
+                         self._session_notifiers, self._channels, self._phone_clocks, self._frames, self._stairs,
+                         self._sam_slots):
             registry.pop(session_id, None)
 
     def _dispatch(self, session_id: str, lock: threading.Lock, follow: dict) -> None:
@@ -1170,8 +1172,7 @@ class SpatialRunManager:
                 if incident_id not in rows:
                     rows[incident_id] = db.get(AlertEvent, incident_id)
                 return rows[incident_id]
-            if db.query(AlertEvent).filter(AlertEvent.session_id == session_id, AlertEvent.spatial_state.in_(
-                    ("awaiting_wearer", "cancelled_by_wearer"))).first() is not None:
+            if self._wearer_window_open(db, session_id):
                 channel.drop_advisories("incident open")
             pending = channel.pending(after, lambda i: row(i).spatial_state, lambda i: row(i).wearer_deadline_at, now)
             listen = channel.listening_for(now)
@@ -1276,14 +1277,40 @@ class SpatialRunManager:
         store, gate, lock = self._frames.get(session_id), self._stairs.get(session_id), self._locks.get(session_id)
         if channel is None or store is None or gate is None or lock is None:
             return None
+        if await asyncio.to_thread(self._session_status, session_id) != "Running":
+            raise LiveRunEnded(session_id)  # the token outlives Stop for the incident's voice, not for new frames
         source_ms, uncertainty = (None, None) if capture_ms is None else self._frame_source_ms(session_id, capture_ms)
-        frame = Frame(store.received + 1, _utcnow(), time.monotonic(), source_ms, uncertainty, data)
+        received_mono = time.monotonic()
+        phone = self._phone_clocks.get(session_id)
+        captured_mono = None
+        if capture_ms is not None and phone is not None:
+            captured_mono = (capture_ms + phone["offset_ms"]) / 1000
+            if captured_mono > received_mono + phone["uncertainty_ms"] / 1000:
+                captured_mono = None  # claims to be from the future: the mapping cannot be trusted for this frame
+        frame = Frame(store.received + 1, _utcnow(), received_mono, source_ms, uncertainty, data, captured_mono,
+                      None if captured_mono is None else phone["uncertainty_ms"])
         store.add(frame)
         gate.offer(frame)
         job = gate.take(frame.received_mono)
         if job is not None:
             self._background(self._stairs_job(session_id, lock, job))
         return {"frame_id": frame.id, "clock": "synchronized" if source_ms is not None else "unsynchronized"}
+
+    def _session_status(self, session_id: str) -> str | None:
+        with self._db() as db:
+            session = db.get(SpatialSession, session_id)
+            return session.status if session else None
+
+    def _wearer_window_open(self, db, session_id: str) -> bool:
+        """An incident is still inside the wearer's response window: waiting for the answer, or
+        cancelled and not yet past its deadline plus grace (a HELP can still raise it)."""
+        grace = timedelta(seconds=self._incident_cfg[session_id].grace) if session_id in self._incident_cfg else timedelta(0)
+        now = _utcnow()
+        for row in db.query(AlertEvent).filter(AlertEvent.session_id == session_id, AlertEvent.spatial_state.in_(
+                ("awaiting_wearer", "cancelled_by_wearer"))):
+            if row.spatial_state == "awaiting_wearer" or now < row.wearer_deadline_at + grace:
+                return True
+        return False
 
     async def _stairs_job(self, session_id: str, lock: threading.Lock, frame: Frame) -> None:
         """SAM on one frame for the spoken advisory. The result is stored whatever it is."""
@@ -1292,7 +1319,7 @@ class SpatialRunManager:
             analysis_id = await asyncio.to_thread(self._open_stairs_analysis, lock, session_id, frame)
             if analysis_id is None:
                 return
-            outcome = await self._run_segment((frame.data, "image/jpeg", STAIRS_PROMPT))
+            outcome = await self._live_segment(session_id, (frame.data, "image/jpeg", STAIRS_PROMPT))
             await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
             if outcome["status"] == "Complete":
                 await asyncio.to_thread(self._announce_stairs, lock, session_id, frame)
@@ -1321,10 +1348,7 @@ class SpatialRunManager:
             session = db.get(SpatialSession, session_id)
             if session is None or session.status != "Running":
                 return
-            open_incident = db.query(AlertEvent).filter(
-                AlertEvent.session_id == session_id,
-                AlertEvent.spatial_state.in_(("awaiting_wearer", "cancelled_by_wearer"))).first() is not None
-            if not gate.may_announce(frame, time.monotonic(), open_incident):
+            if not gate.may_announce(frame, time.monotonic(), self._wearer_window_open(db, session_id)):
                 return
             channel.say("stairs_visible", None, _utcnow())
         _hint(session_id, "wearer")
@@ -1333,7 +1357,14 @@ class SpatialRunManager:
         """The frame nearest the fall and SAM's reading of it, stored as the incident's scene evidence."""
         analysis_id, request = await asyncio.to_thread(self._open_scene_analysis, lock, session_id, incident_id)
         if request is not None:
-            await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, await self._run_segment(request))
+            outcome = await self._live_segment(session_id, request)
+            await asyncio.to_thread(self._close_analysis, lock, session_id, analysis_id, outcome)
+
+    async def _live_segment(self, session_id: str, request) -> dict:
+        """Every live SAM call, advisory or incident scene, goes through one slot per session: one
+        request at a time, starts at least 3 s apart. Sending the alert never waits here."""
+        slot = self._sam_slots.setdefault(session_id, SamSlot())
+        return await slot.run(lambda: self._run_segment(request))
 
     def _open_scene_analysis(self, lock, session_id: str, incident_id: int):
         store = self._frames.get(session_id)
@@ -1344,7 +1375,10 @@ class SpatialRunManager:
             match = store.match(row.source_start_ms)
             analysis = SpatialAnalysis(session_id=session_id, incident_id=incident_id, kind="sam", status="Running",
                                        prompt=STAIRS_PROMPT, camera_status=match.status,
-                                       frame_id=match.frame.id if match.frame else None, created_at=_utcnow())
+                                       frame_id=match.frame.id if match.frame else None, created_at=_utcnow(),
+                                       frame_info=None if match.frame is None else json.dumps(
+                                           {"source_ms": match.frame.source_ms, "delta_ms": match.delta_ms,
+                                            "uncertainty_ms": match.frame.uncertainty_ms}))
             request = None
             if match.frame is not None:
                 folder = _journal_path(session_id, self._live_data_dir).parent / "frames"
@@ -1633,6 +1667,22 @@ def _advisory_json(action, sam, scenario_meta) -> dict:
     }
 
 
+def _live_frame(session_id: str, analyses) -> dict:
+    """The incident's camera evidence from its stored scene analysis: the frame only counts as
+    evidence when it was matched to the fall, otherwise the reason is shown instead."""
+    source = "Phone camera at eye height (glasses proxy)"
+    scene = next((a for a in reversed(analyses) if a.kind == "sam" and a.camera_status), None)
+    if scene is None:
+        return {"status": "Unavailable", "reason": "No scene analysis was recorded for this incident", "source": source}
+    info = json.loads(scene.frame_info) if scene.frame_info else {}
+    url = f"/api/spatial/sessions/{session_id}/frames/{scene.frame_id}" if scene.frame_id else None
+    if scene.camera_status != "Available":
+        return {"status": scene.camera_status, "reason": scene.reason, "source": source, "nearest_url": url}
+    return {"status": "Available", "id": scene.frame_id, "url": url, "label": "Phone camera frame (glasses proxy)",
+            "scene": f"Scene analysis: {scene_status(scene.status)}", "source_ms": info.get("source_ms"),
+            "alignment_error_ms": round(abs(info.get("delta_ms") or 0)), "source": source}
+
+
 def incident_detail(incident_id: int, session_factory=None) -> dict | None:
     """Everything the evidence drawer shows for one incident, each part labelled with its source."""
     with (session_factory or database.SessionLocal)() as db:
@@ -1658,8 +1708,7 @@ def incident_detail(incident_id: int, session_factory=None) -> dict | None:
             source_ms, samples = table[:, 0].astype(np.int64), table[:, JOURNAL_COLUMNS.index("ax"):]
             source = json.loads(session.config_snapshot or "{}").get("source", "esp32")
             location, imu_source, segments = UNKNOWN_LOCATION, LIVE_SOURCE_LABELS[source], []
-            frame = {"status": "Unavailable", "reason": "No camera frames in a live session yet",
-                     "source": "Phone camera at eye height (glasses proxy)"}
+            frame = _live_frame(session.id, analyses)
         else:
             scenario = load_scenario(session.scenario_id)
             source_ms, samples = scenario.source_ms, scenario.samples
