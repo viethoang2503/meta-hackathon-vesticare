@@ -55,11 +55,11 @@ Quét QR bằng iPhone 1 và bấm Start. Mã dùng một lần và hết hạn 
 
 ## Phần A. Chuẩn bị một lần (khoảng 20 phút, chưa cần ESP32)
 
-- [ ] **A1. Tạo bot Telegram mới.** Mở @BotFather, gửi `/newbot`. Dán `TELEGRAM_BOT_TOKEN=...` vào `backend/.env`.
-- [ ] **A2. Hai liên hệ nhắn bot.** Từ iPhone 2 nhắn "hi" cho bot. Người làm liên hệ 2 cũng nhắn "hi". Hẹn người đó online lúc thử và lúc quay.
-- [ ] **A3. Lấy chat id.** Tắt backend trước, vì Telegram chỉ phát tin cho một bên đọc. Chạy `.verify/venv/bin/python backend/tools/telegram_chats.py`. Điền `TELEGRAM_CHAT_ID_1` và `TELEGRAM_CHAT_ID_2` vào `backend/.env`. Công cụ không in token (tôi đã chạy nó khi chưa có token: nó báo "TELEGRAM_BOT_TOKEN is not set").
-- [ ] **A4. Tạo `DEVICE_TOKEN`.** Chạy `openssl rand -hex 16`. Đặt cùng một giá trị vào `backend/.env` và `vesticare-sensor/include/config.h`.
-- [ ] **A5. Điền nốt `config.h`.** Wi-Fi 2,4 GHz (SSID và mật khẩu), IP laptop trong `BACKEND_URL` đúng mạng đang dùng, `FIRMWARE_VERSION "2.0.0"`.
+- [x] **A1. Tạo bot Telegram mới.** Mở @BotFather, gửi `/newbot`. Dán `TELEGRAM_BOT_TOKEN=...` vào `backend/.env`.
+- [x] **A2. Hai liên hệ nhắn bot.** Từ iPhone 2 nhắn "hi" cho bot. Người làm liên hệ 2 cũng nhắn "hi". Hẹn người đó online lúc thử và lúc quay.
+- [x] **A3. Lấy chat id.** Tắt backend trước, vì Telegram chỉ phát tin cho một bên đọc. Chạy `.verify/venv/bin/python backend/tools/telegram_chats.py`. Điền `TELEGRAM_CHAT_ID_1` và `TELEGRAM_CHAT_ID_2` vào `backend/.env`. Công cụ không in token (tôi đã chạy nó khi chưa có token: nó báo "TELEGRAM_BOT_TOKEN is not set").
+- [x] **A4. Tạo `DEVICE_TOKEN`.** Chạy `openssl rand -hex 16`. Đặt cùng một giá trị vào `backend/.env` và `vesticare-sensor/include/config.h`.
+- [x] **A5. Điền nốt `config.h`.** Wi-Fi 2,4 GHz (SSID và mật khẩu), IP laptop trong `BACKEND_URL` đúng mạng đang dùng, `FIRMWARE_VERSION "2.0.0"`.
 - [ ] **A6. Chuẩn bị người và chỗ.** Hẹn ít nhất 2 người trưởng thành khỏe mạnh đồng ý. Chuẩn bị nệm dày, sàn phẳng, một người đứng cạnh khi ngã, một cầu thang thật, và điện thoại quay video có đồng hồ hiện giờ.
 
 ## Phần B. Từ "chưa có bằng chứng" thành bằng chứng thật
@@ -76,15 +76,15 @@ Lệnh này mở phiên với Telegram thật và phát kịch bản ngã. Mở 
 
 Mỗi lượt là một lần chạy lại lệnh trên. Cách tạo từng nhánh:
 
-- [ ] **B1.1** Không làm gì. Hết cửa sổ 30 giây thì iPhone 2 (liên hệ 1) nhận cảnh báo.
-- [ ] **B1.2** OK trước hạn. Nói "I am fine" vào iPhone 1, hoặc chạy `curl -X POST http://127.0.0.1:8010/api/spatial/incidents/<mã incident>/wearer-response -H 'Content-Type: application/json' -d '{"response":"ok"}'`. Không ai nhận cảnh báo.
+- [x] **B1.1** Không làm gì. Hết cửa sổ 30 giây thì iPhone 2 (liên hệ 1) nhận cảnh báo.
+- [x] **B1.2** OK trước hạn. Nói "I am fine" vào iPhone 1, hoặc chạy `curl -X POST http://127.0.0.1:8010/api/spatial/incidents/<mã incident>/wearer-response -H 'Content-Type: application/json' -d '{"response":"ok"}'`. Không ai nhận cảnh báo.
 - [ ] **B1.3** HELP. Nói "I need help" vào iPhone 1 (chỉ nói được bằng giọng). Liên hệ 1 nhận cảnh báo ngay.
-- [ ] **B1.4** Bấm nút Acknowledge ở iPhone 2. Không có tin leo thang tới liên hệ 2.
-- [ ] **B1.5** Không bấm Ack. Sau 20 giây liên hệ 2 nhận tin leo thang. Rồi liên hệ 2 bấm Ack.
-- [ ] **B1.6** Lỗi gửi. Trên iPhone 2, chặn bot (Telegram, Block bot), chạy một lượt, rồi bỏ chặn. Liên hệ 2 phải được báo ngay. Telegram trả lỗi thế nào với bot bị chặn là chỗ tôi chưa chắc (xem E1).
-- [ ] **B1.7** OK muộn sau khi đã báo (nói "I am fine" sau khi cảnh báo đi). Phải ra tin cập nhật, không thu hồi cảnh báo. Nói OK hai lần để thấy lần lặp chỉ ghi log.
-- [ ] **B1.8** Bấm Stop trên `live.html` khi đang đếm ngược. Incident vẫn báo ở hạn. Làm thêm một lượt: nói OK, bấm Stop, rồi nói HELP trước hạn: cảnh báo vẫn phải đi.
-- [ ] **B1.9** Tắt hẳn backend (Ctrl+C) giữa lúc đếm ngược, mở lại. Phiên phải ghi "Interrupted" và không có tin tự gửi.
+- [x] **B1.4** Bấm nút Acknowledge ở iPhone 2. Không có tin leo thang tới liên hệ 2.
+- [x] **B1.5** Không bấm Ack. Sau 20 giây liên hệ 2 nhận tin leo thang. Rồi liên hệ 2 bấm Ack.
+- [x] **B1.6** Lỗi gửi. Trên iPhone 2, chặn bot (Telegram, Block bot), chạy một lượt, rồi bỏ chặn. Liên hệ 2 phải được báo ngay. Telegram trả lỗi thế nào với bot bị chặn là chỗ tôi chưa chắc (xem E1).
+- [x] **B1.7** OK muộn sau khi đã báo (nói "I am fine" sau khi cảnh báo đi). Phải ra tin cập nhật, không thu hồi cảnh báo. Nói OK hai lần để thấy lần lặp chỉ ghi log.
+- [x] **B1.8** Bấm Stop trên `live.html` khi đang đếm ngược. Incident vẫn báo ở hạn. Làm thêm một lượt: nói OK, bấm Stop, rồi nói HELP trước hạn: cảnh báo vẫn phải đi.
+- [x] **B1.9** Tắt hẳn backend (Ctrl+C) giữa lúc đếm ngược, mở lại. Phiên phải ghi "Interrupted" và không có tin tự gửi.
 - [ ] **B1.10** Nói HELP đúng lúc hàng chờ STT đầy (bật nhiều lượt cùng lúc là khó tạo). Nếu không tạo được, bỏ qua và ghi chưa thử.
 
 Sau khi xong: chụp màn hình tin trên iPhone 2 (kèm giờ). Rồi:

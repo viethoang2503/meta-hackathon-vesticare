@@ -1,0 +1,441 @@
+{
+ "incidents": 9,
+ "branches": {
+  "ok_cancel": {
+   "text": "OK before the deadline cancels",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "help_alert": {
+   "text": "HELP raises the alert at once",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "timeout_alert": {
+   "text": "Silence alerts at the deadline",
+   "seen": 7,
+   "real_telegram": 7,
+   "status": "Seen with real Telegram"
+  },
+  "ack": {
+   "text": "A caregiver acknowledges",
+   "seen": 5,
+   "real_telegram": 5,
+   "status": "Seen with real Telegram"
+  },
+  "escalation_no_ack": {
+   "text": "No acknowledgement escalates to contact 2",
+   "seen": 5,
+   "real_telegram": 5,
+   "status": "Seen with real Telegram"
+  },
+  "send_failed": {
+   "text": "The first alert fails to send and contact 2 is alerted at once",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "send_unknown": {
+   "text": "A send with no answer keeps the acknowledgement timer",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "stop_during_window": {
+   "text": "Stop pressed while the wearer is still being asked",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "stop_during_help_only": {
+   "text": "Stop pressed after a cancel, while only HELP is heard",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "ok_then_help_before_deadline": {
+   "text": "OK, then HELP before the deadline",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "cancel_then_silence": {
+   "text": "Cancelled, then silence to the end: no alert",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "help_in_grace": {
+   "text": "HELP captured before D, processed after D within the grace",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "help_rejected_late": {
+   "text": "HELP captured after D, too late, or with an unconfirmed clock is only logged",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "ok_late": {
+   "text": "OK after the alert is a late update, not a cancel",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "ok_repeated": {
+   "text": "A repeated OK is logged and sends nothing",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  },
+  "stt_dropped": {
+   "text": "A turn dropped from a full speech queue",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "stt_failed": {
+   "text": "Speech recognition failed on a turn",
+   "seen": 0,
+   "real_telegram": 0,
+   "status": "Not seen"
+  },
+  "interrupted": {
+   "text": "The backend restarted during the session",
+   "seen": 1,
+   "real_telegram": 1,
+   "status": "Seen with real Telegram"
+  }
+ },
+ "schedule_timing": {
+  "samples": 7,
+  "max_ms": 4,
+  "target_ms": 2000,
+  "within_target": true
+ },
+ "telegram_send_ms": {
+  "n": 10,
+  "min": 889,
+  "max": 1836
+ },
+ "not_measured": [
+  "phone receipt time of a Telegram message",
+  "behaviour under load from other models"
+ ],
+ "complete": false,
+ "trials": [
+  {
+   "incident_id": 23,
+   "session_id": "b6bd1410bcc64ae0990d90570f37e8f9",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "ack",
+    "send_failed",
+    "timeout_alert"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": 3,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "failed",
+     "channel": "telegram",
+     "scheduled_ms": 30003,
+     "done_ms": 31000,
+     "error": "Forbidden: bot was blocked by the user"
+    },
+    {
+     "contact": "contact_2",
+     "kind": "escalate",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 31001,
+     "done_ms": 31914,
+     "error": null
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": null
+  },
+  {
+   "incident_id": 22,
+   "session_id": "b05133477fe24f23b2d43cb5b6886fe6",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "escalation_no_ack",
+    "timeout_alert"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": 4,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 30004,
+     "done_ms": 30990,
+     "error": null
+    },
+    {
+     "contact": "contact_2",
+     "kind": "escalate",
+     "status": "failed",
+     "channel": "telegram",
+     "scheduled_ms": 50011,
+     "done_ms": 51001,
+     "error": "Forbidden: bot was blocked by the user"
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  },
+  {
+   "incident_id": 21,
+   "session_id": "f8cb6cc2bef1482ab146124c5041cda5",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "ack",
+    "escalation_no_ack",
+    "timeout_alert"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": 4,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 30004,
+     "done_ms": 30950,
+     "error": null
+    },
+    {
+     "contact": "contact_2",
+     "kind": "escalate",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 50016,
+     "done_ms": 50998,
+     "error": null
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  },
+  {
+   "incident_id": 20,
+   "session_id": "7bbe2b41d2dc488d819a3e691cc4613e",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "ack",
+    "timeout_alert"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": 3,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 30003,
+     "done_ms": 30960,
+     "error": null
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  },
+  {
+   "incident_id": 19,
+   "session_id": "ce19eb867e5d4b349521823a4e888d9d",
+   "state": "awaiting_wearer",
+   "alert_reason": null,
+   "tags": [
+    "interrupted"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": null,
+   "sends": [],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "session_interrupted"
+  },
+  {
+   "incident_id": 18,
+   "session_id": "d3584dfe711f4e28bf569289569fb8af",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "escalation_no_ack",
+    "stop_during_window",
+    "timeout_alert"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": 2,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 30002,
+     "done_ms": 31032,
+     "error": null
+    },
+    {
+     "contact": "contact_2",
+     "kind": "escalate",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 50010,
+     "done_ms": 50946,
+     "error": null
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  },
+  {
+   "incident_id": 17,
+   "session_id": "8e660b343ddd4be4a4657aba01c9f381",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "ack",
+    "escalation_no_ack",
+    "ok_late",
+    "ok_repeated",
+    "timeout_alert"
+   ],
+   "answers": [
+    {
+     "response": "ok",
+     "applied": true,
+     "reason": null,
+     "transcript": null,
+     "capture_end_ms": 33803,
+     "received_ms": null,
+     "queue_ms": null,
+     "stt_ms": null,
+     "classified_ms": 33804
+    },
+    {
+     "response": "ok",
+     "applied": false,
+     "reason": "already_recorded",
+     "transcript": null,
+     "capture_end_ms": 35835,
+     "received_ms": null,
+     "queue_ms": null,
+     "stt_ms": null,
+     "classified_ms": 35838
+    }
+   ],
+   "timeout_to_scheduled_ms": 4,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 30004,
+     "done_ms": 30893,
+     "error": null
+    },
+    {
+     "contact": "contact_2",
+     "kind": "escalate",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 50010,
+     "done_ms": 51846,
+     "error": null
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  },
+  {
+   "incident_id": 16,
+   "session_id": "c3867ab3cb1244a98f6204d93e2f8152",
+   "state": "cancelled_by_wearer",
+   "alert_reason": null,
+   "tags": [
+    "cancel_then_silence",
+    "ok_cancel"
+   ],
+   "answers": [
+    {
+     "response": "ok",
+     "applied": true,
+     "reason": null,
+     "transcript": null,
+     "capture_end_ms": 2074,
+     "received_ms": null,
+     "queue_ms": null,
+     "stt_ms": null,
+     "classified_ms": 2075
+    }
+   ],
+   "timeout_to_scheduled_ms": null,
+   "sends": [],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  },
+  {
+   "incident_id": 15,
+   "session_id": "c715b21df0a44f2192b1b8dd883a89c6",
+   "state": "alerted",
+   "alert_reason": "timeout",
+   "tags": [
+    "ack",
+    "escalation_no_ack",
+    "send_unknown",
+    "timeout_alert"
+   ],
+   "answers": [],
+   "timeout_to_scheduled_ms": 3,
+   "sends": [
+    {
+     "contact": "contact_1",
+     "kind": "notify",
+     "status": "sent",
+     "channel": "telegram",
+     "scheduled_ms": 30003,
+     "done_ms": 31028,
+     "error": null
+    },
+    {
+     "contact": "contact_2",
+     "kind": "escalate",
+     "status": "unknown",
+     "channel": "telegram",
+     "scheduled_ms": 50021,
+     "done_ms": 55031,
+     "error": "no answer within 5 s"
+    }
+   ],
+   "channel": "telegram",
+   "source": "fake_esp32",
+   "ended": "user_stop"
+  }
+ ]
+}
